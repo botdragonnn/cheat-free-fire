@@ -22,6 +22,7 @@ std::mutex Data::m_Mutex;
 std::atomic<bool> Data::m_Running{ false };
 HANDLE Data::m_ThreadHandle = nullptr;
 bool Data::m_SnapshotFresh = false;
+std::atomic<LONGLONG> Data::m_LastFreshTick{ 0 };
 
 // Uma view-projection matrix valida tem elementos finitos e magnitude normal.
 // Uma leitura "rasgada" (o jogo escreve os 64 bytes enquanto lemos) ou de um
@@ -214,6 +215,8 @@ void Data::ReadLoop( )
 	int emptyFrames = 0;
 	while ( m_Running.load( ) && !g_Globals.General.ShutDown )
 	{
+		try
+		{
 		std::vector<PlayerData> tempPlayers;
 		GameContext tempCtx{ };
 
@@ -479,6 +482,7 @@ void Data::ReadLoop( )
 					DiagLog( "[diag] empty-clear: snapshot apagado apos %d frames vazios frescos", 900 );
 					m_Players.swap( tempPlayers );
 					m_SnapshotFresh = true;
+					m_LastFreshTick.store( GetTickCount64( ) );
 				}
 				else
 				{
@@ -490,6 +494,7 @@ void Data::ReadLoop( )
 				emptyFrames = 0;
 				m_Players.swap( tempPlayers );
 				m_SnapshotFresh = true;
+				m_LastFreshTick.store( GetTickCount64( ) );
 			}
 		}
 		else if ( readMatchState && !matchActive )
@@ -550,6 +555,18 @@ void Data::ReadLoop( )
 					m_Context = tempCtx;
 			}
 		}
+		}
+		catch ( const std::exception& ex )
+		{
+			// Protege a thread de leitura de morrer silenciosamente por excecao
+			// (bad_alloc/lixo de leitura): sem isso, um unico lance faz o snapshot
+			// congelar para sempre e o ESP sumir ate o processo ser reiniciado.
+			DiagLog( "[diag] ReadLoop exception: %s", ex.what( ) );
+		}
+		catch ( ... )
+		{
+			DiagLog( "[diag] ReadLoop exception (unknown)" );
+		}
 
 		std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
 	}
@@ -577,11 +594,33 @@ void Data::Draw( int width, int height, bool N32, bool V31 )
 
 	if ( g_Globals.General.EnableFuncs == 0 ) return;
 
+	// Globals de projecao atualizados ANTES de qualquer desenho (inclusive o
+	// path de base==0 abaixo) — W2S nunca usa dimensoes de um frame antigo.
+	ScreenWidth = width;
+	ScreenHeight = height;
+
+	// Corpo inteiro protegido: uma excecao (bad_alloc do snapshot, leitura
+	// lixo) nao pode derrubar o frame de render — sem isso o overlay inteiro
+	// congela e a ESP morre junto. Captura e segue o proximo frame.
+	try
+	{
+
 	// Sempre que a base/contexto nao permitir leituras vivas, desenha o overlay
 	// do ultimo snapshot congelado (posicoes de tela) para o ESP nunca sumir.
 	// O skeleton e desativado nesse caminho pois precisa de memoria ao vivo.
-	auto DrawFrozenEsp = [ ] ( )
+	// liveMatrix: view matrix atual (releitura ao vivo ou ultima boa). Se
+	// valida, reprojeta os mundos do snapshot — o ESP SEGUE a camera mesmo
+	// sem leitura fresca, em vez de ficar grudado na tela.
+	auto DrawFrozenEsp = [ ] ( const Matrix4x4& liveMatrix )
 	{
+		// Snapshot sem leitura fresca ha mais de ~3s nao e desenhado: isso e
+		// transicao real de partida/loading, e o ESP volta sozinho quando a
+		// leitura renovar (mesmo comportamento do cheat de referencia, que
+		// limpa as entidades a cada frame). Sem isso, screens congeladas de
+		// uma partida antiga ficariam grudadas na tela.
+		if ( !m_SnapshotFresh && ( GetTickCount64( ) - m_LastFreshTick.load( ) ) > 3000 )
+			return;
+
 		const auto& ESPc = g_Globals.Visuals.ESP;
 		ImDrawList* DLc = ImGui::GetForegroundDrawList( );
 
@@ -592,7 +631,7 @@ void Data::Draw( int width, int height, bool N32, bool V31 )
 		}
 
 		for ( const auto& p : frozen )
-			DrawEspEntityOverlay( p, DLc, ESPc, Matrix4x4{ }, false, false, false );
+			DrawEspEntityOverlay( p, DLc, ESPc, liveMatrix, false, false, false );
 	};
 
 	if ( Offsets::LibIl2Cpp == 0 )
@@ -608,7 +647,7 @@ void Data::Draw( int width, int height, bool N32, bool V31 )
 			lastBaseLog = now;
 			DiagLog( "[diag] base==0: DrawFrozenEsp, snapshot=%d", ( int )m_Players.size( ) );
 		}
-		DrawFrozenEsp( );
+		DrawFrozenEsp( Data::GetContext( ).ViewMatrix );
 		return;
 	}
 
@@ -621,9 +660,6 @@ void Data::Draw( int width, int height, bool N32, bool V31 )
 	{
 		N32 ? g_FreeFireMemory.Write<uint32_t>( addr, ( uint32_t )val ) : g_FreeFireMemory.Write<uint64_t>( addr, ( uint64_t )val );
 	};
-
-	ScreenWidth = width;
-	ScreenHeight = height;
 
 	const auto& ESP = g_Globals.Visuals.ESP;
 	const auto& AimCfg = g_Globals.AimBot;
@@ -785,10 +821,83 @@ void Data::Draw( int width, int height, bool N32, bool V31 )
 		snapshotFresh = m_SnapshotFresh;
 	}
 
+	// ==================== Watchdog de recuperacao (ESP nunca desliga) ====================
+	// Se o snapshot nao fica fresco por ~2s, o processo do jogo provavelmente
+	// reiniciou ou o CR3 envelheceu. Acoes, sem depender do usuario:
+	//   < 6s  -> RefreshCR3 (barato, 1x/seg)
+	//   >= 6s -> RestartAsync (re-localiza a base; single-flight + cooldown)
+	// Se a thread de leitura morreu (crash fora do alcance do try/catch do
+	// ReadLoop), recria a thread aqui — a ESP se recupera sozinha.
+	if ( !snapshotFresh )
+	{
+		LONGLONG staleMs = GetTickCount64( ) - m_LastFreshTick.load( );
+		if ( staleMs > 2000 )
+		{
+			static LONGLONG lastWatchdogAct = 0;
+			LONGLONG nowWd = GetTickCount64( );
+			if ( nowWd - lastWatchdogAct > 1000 )
+			{
+				lastWatchdogAct = nowWd;
+				if ( staleMs > 6000 )
+				{
+					DiagLog( "[diag] watchdog: %lldms sem leitura fresca — restart forcado", ( long long )staleMs );
+					g_FreeFireMemory.RestartAsync( );
+				}
+				else
+				{
+					Memory::RefreshCR3( );
+				}
+			}
+			if ( m_ThreadHandle )
+			{
+				if ( WaitForSingleObject( m_ThreadHandle, 0 ) == WAIT_OBJECT_0 )
+				{
+					DiagLog( "[diag] watchdog: thread de leitura morta — recriando" );
+					CloseHandle( m_ThreadHandle );
+					m_ThreadHandle = nullptr;
+					m_Running.store( false );
+					StartReadThread( );
+				}
+			}
+		}
+	}
+
 	uintptr_t localPlayer = ctx.LocalPlayer;
 	uintptr_t MainCamera = ctx.MainCamera;
 	Matrix4x4 ViewMatrix = ctx.ViewMatrix;
 	bool IsObserving = ctx.IsObserving;
+
+	// ==================== View Matrix ao vivo (espelho do FF) ====================
+	// O cheat de referencia relê a view matrix a cada frame no loop de desenho;
+	// por isso o ESP dele reprojeta SEMPRE com a câmera atual e nunca fica
+	// grudado quando a leitura de entidades engasga. Aqui a releitura usa apenas
+	// a cadeia de câmera (MatchGame -> controller -> camera -> cachedPtr) com o
+	// mesmo vetor de offsets do ReadLoop; se falhar, fica a matriz do snapshot;
+	// se as duas falharem, cai no caminho congelado abaixo.
+	if ( ctx.MatchGame != 0 )
+	{
+		uintptr_t ccm = ReadPtr( ctx.MatchGame + Offsets::MatchGame::m_CameraControllerManager );
+		if ( ccm != 0 )
+		{
+			uintptr_t cam = ReadPtr( ccm + Offsets::CameraControllerManager::m_Camera );
+			if ( cam != 0 )
+			{
+				uintptr_t cached = ReadPtr( cam + Offsets::Camera::m_CachedPtr );
+				if ( cached != 0 )
+				{
+					Matrix4x4 live = g_FreeFireMemory.Read<Matrix4x4>( cached + Offsets::Camera::ViewMatrix );
+					if ( IsValidViewMatrix( live ) )
+					{
+						ViewMatrix = live;
+						{
+							std::lock_guard<std::mutex> lock( m_Mutex );
+							m_Context.ViewMatrix = live;
+						}
+					}
+				}
+			}
+		}
+	}
 
 	if ( localPlayer == 0 || !IsValidViewMatrix( ViewMatrix ) )
 	{
@@ -804,7 +913,7 @@ void Data::Draw( int width, int height, bool N32, bool V31 )
 			DiagLog( "[diag] frozen: localPlayer=%llx matrixValid=%d snapshot=%d",
 				( unsigned long long )localPlayer, IsValidViewMatrix( ViewMatrix ) ? 1 : 0, ( int )snapshot.size( ) );
 		}
-		DrawFrozenEsp( );
+		DrawFrozenEsp( ViewMatrix );
 		return;
 	}
 
@@ -916,6 +1025,13 @@ void Data::Draw( int width, int height, bool N32, bool V31 )
 	const float centerX = ( float )ScreenWidth * 0.5f;
 	const float centerY = ( float )ScreenHeight * 0.5f;
 
+	// Partida ativa (localPlayer + view matrix validos): desenha o snapshot
+	// SEMPRE, mesmo quando a leitura de entidades engasga por segundos — as
+	// posicoes de mundo congeladas sao reprojetadas com a camera ao vivo e o
+	// ESP segue os inimigos em vez de sumir. O snapshot so desaparece quando o
+	// ReadLoop realmente limpa (lobby-clear 1200 frames sem Match / empty-clear
+	// 900 frames vazios), ou seja, quando a partida de fato acabou. O watchdog
+	// acima recupera a leitura viva em paralelo.
 	for ( size_t i = 0; i < snapshot.size( ); i++ )
 	{
 		const auto& p = snapshot [ i ];
@@ -1573,6 +1689,15 @@ void Data::Draw( int width, int height, bool N32, bool V31 )
 			}
 			s_awmOriginals.clear( );
 		}
+	}
+	}
+	catch ( const std::exception& ex )
+	{
+		DiagLog( "[diag] Draw exception: %s", ex.what( ) );
+	}
+	catch ( ... )
+	{
+		DiagLog( "[diag] Draw exception (unknown)" );
 	}
 }
 

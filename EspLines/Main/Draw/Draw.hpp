@@ -98,6 +98,10 @@ class Data
 	// (ESP continua desenhando), mas fica "não fresco" para o aimbot não mirar
 	// em posição congelada.
 	static bool m_SnapshotFresh;
+	// Tick (GetTickCount64) do último frame com snapshot fresco — usado pelo
+	// Draw para nunca desenhar posições congeladas por mais que ~3s (transição
+	// real de partida), como o cheat de referência que limpa as entidades.
+	static std::atomic<LONGLONG> m_LastFreshTick;
 
 	template <bool N32, bool V31>
 	static DWORD WINAPI ReadLoopWrapper( LPVOID );
