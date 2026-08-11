@@ -1,0 +1,210 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>16.0</VCProjectVersion>
+    <Keyword>Win32Proj</Keyword>
+    <ProjectGuid>{0E3E2A5C-0E9D-4C4B-9A6B-1B1C1F2F3A4B}</ProjectGuid>
+    <RootNamespace>ZmInternal</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0.22621.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <LinkIncremental>true</LinkIncremental>
+    <OutDir>$(ProjectDir)x64\$(Configuration)\</OutDir>
+    <IntDir>$(ProjectDir)x64\$(Configuration)\</IntDir>
+    <TargetName>HwMonCore</TargetName>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <LinkIncremental>false</LinkIncremental>
+    <OutDir>$(ProjectDir)x64\$(Configuration)\</OutDir>
+    <IntDir>$(ProjectDir)x64\$(Configuration)\</IntDir>
+    <TargetName>HwMonCore</TargetName>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>_DEBUG;_WINDOWS;_USRDLL;_CRT_SECURE_NO_WARNINGS;IMGUI_DEFINE_MATH_OPERATORS;DISCORD_DISABLE_IO_THREAD;JM_XORSTR_DISABLE_AVX_INTRINSICS;_WINDLL;_UNICODE;UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir);$(ProjectDir)src;$(ProjectDir)EspLines;$(ProjectDir)ext\Dependencies;$(ProjectDir)ext\Dependencies\ImGui;$(ProjectDir)ext\Dependencies\ImGui\libs\GLFW\Include;$(ProjectDir)ext\Dependencies\Freetype\include;$(ProjectDir)ext\Dependencies\GL;$(ProjectDir)ext\Discord\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <ConformanceMode>true</ConformanceMode>
+      <AdditionalOptions>/GR- /EHs-c- /utf-8 /FC /wd4005 %(AdditionalOptions)</AdditionalOptions>
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>OPENGL32.LIB;GLFW3.LIB;WINHTTP.LIB;BCRYPT.LIB;RPCrt4.LIB;KERNEL32.LIB;USER32.LIB;GDI32.LIB;WINSPOOL.LIB;COMDLG32.LIB;ADVAPI32.LIB;SHELL32.LIB;OLE32.LIB;OLEAUT32.LIB;UUID.LIB;ODBC32.LIB;ODBCCP32.LIB;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(ProjectDir)ext\Dependencies\ImGui\libs\GLFW\lib;$(ProjectDir)ext\Dependencies\Freetype\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level3</WarningLevel>
+      <Optimization>Full</Optimization>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>NDEBUG;_WINDOWS;_USRDLL;_CRT_SECURE_NO_WARNINGS;IMGUI_DEFINE_MATH_OPERATORS;DISCORD_DISABLE_IO_THREAD;JM_XORSTR_DISABLE_AVX_INTRINSICS;_WINDLL;_UNICODE;UNICODE;IMGUI_DISABLE_DEMO_WINDOWS;IMGUI_DISABLE_DEBUG_TOOLS;IMGUI_DISABLE_LOGGING;IMGUI_DISABLE_ASSERTS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir);$(ProjectDir)src;$(ProjectDir)EspLines;$(ProjectDir)ext\Dependencies;$(ProjectDir)ext\Dependencies\ImGui;$(ProjectDir)ext\Dependencies\ImGui\libs\GLFW\Include;$(ProjectDir)ext\Dependencies\Freetype\include;$(ProjectDir)ext\Dependencies\GL;$(ProjectDir)ext\Discord\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <ConformanceMode>true</ConformanceMode>
+      <AdditionalOptions>/GR- /EHs-c- /utf-8 /FC /wd4005 %(AdditionalOptions)</AdditionalOptions>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <WholeProgramOptimization>true</WholeProgramOptimization>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <LinkTimeCodeGeneration>UseLinkTimeCodeGeneration</LinkTimeCodeGeneration>
+      <AdditionalDependencies>OPENGL32.LIB;GLFW3.LIB;WINHTTP.LIB;BCRYPT.LIB;RPCrt4.LIB;KERNEL32.LIB;USER32.LIB;GDI32.LIB;WINSPOOL.LIB;COMDLG32.LIB;ADVAPI32.LIB;SHELL32.LIB;OLE32.LIB;OLEAUT32.LIB;UUID.LIB;ODBC32.LIB;ODBCCP32.LIB;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(ProjectDir)ext\Dependencies\ImGui\libs\GLFW\lib;$(ProjectDir)ext\Dependencies\Freetype\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <IgnoreSpecificDefaultLibraries>MSVCRT.lib;MSVCRTD.lib;MSVCPRT.lib;MSVCPRTD.lib;%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="src\Cheat\Cheat.cpp" />
+    <ClCompile Include="src\Render\Fonts\Fonts.cpp" />
+    <ClCompile Include="src\Render\Interface\Interface.cpp" />
+    <ClCompile Include="src\Render\Overlay\Render\Render.cpp" />
+    <ClCompile Include="src\Render\Overlay\Overlay.cpp" />
+    <ClCompile Include="src\Utils\Utils.cpp" />
+    <ClCompile Include="ext\KeyAuth\KeyAuth.cpp" />
+    <ClCompile Include="ext\Discord\DiscordRPC.cpp" />
+    <ClCompile Include="ext\Discord\src\connection_win.cpp" />
+    <ClCompile Include="ext\Discord\src\discord_register_win.cpp" />
+    <ClCompile Include="ext\Discord\src\discord_rpc.cpp" />
+    <ClCompile Include="ext\Discord\src\rpc_connection.cpp" />
+    <ClCompile Include="ext\Discord\src\serialization.cpp" />
+    <ClCompile Include="dllmain.cpp" />
+    <ClCompile Include="ext\Dependencies\ImGui\imgui.cpp" />
+    <ClCompile Include="ext\Dependencies\ImGui\imgui_draw.cpp" />
+    <ClCompile Include="ext\Dependencies\ImGui\imgui_impl_opengl3.cpp" />
+    <ClCompile Include="ext\Dependencies\ImGui\imgui_impl_win32.cpp" />
+    <ClCompile Include="ext\Dependencies\ImGui\imgui_tables.cpp" />
+    <ClCompile Include="ext\Dependencies\ImGui\imgui_widgets.cpp" />
+    <ClCompile Include="ext\Dependencies\ImGui\Custom.cpp" />
+    <ClCompile Include="ext\Dependencies\Notify\Notify.cpp" />
+    <ClCompile Include="EspLines\Main\Unity\Unity.cpp" />
+    <ClCompile Include="EspLines\Math\Vectors\Vector2.cpp" />
+    <ClCompile Include="EspLines\Math\Vectors\Vector3.cpp" />
+    <ClCompile Include="EspLines\Math\Vectors\Vector4.cpp" />
+    <ClCompile Include="EspLines\Math\Math.cpp" />
+    <ClCompile Include="EspLines\Main\Memory\Memory.cpp" />
+    <ClCompile Include="EspLines\Main\Draw\Draw.cpp" />
+    <ClCompile Include="ext\Dependencies\ImGui\imgui_freetype.cpp" />
+    <ClCompile Include="EspLines\Math\Quaternion\Quaternion.cpp" />
+    <ClCompile Include="EspLines\Main\Draw\Weapon\NameGun.cpp" />
+    <ClCompile Include="src\Cheat\saveconfig.cpp" />
+    <ClCompile Include="bypass\closehandle.cpp" />
+    <ClCompile Include="src\Cheat\FullScreenFix.cpp" />
+    <ClCompile Include="EspLines\Main\Memory\EmulatorEnvironment.cpp" />
+    <ClCompile Include="EspLines\Main\Offsets\Offsets.cpp" />
+    <ClCompile Include="EspLines\Main\Unity\UTF\UTF8.cpp" />
+    <ClCompile Include="src\DynamicStub\DynamicStub.cpp" />
+    <ClCompile Include="ext\Dependencies\VehCpuHook\VehCpuHook.cpp" />
+    <ClCompile Include="Chams\Chams.cpp" />
+    <ClCompile Include="ext\Dependencies\VehPGDHook\Vehpageguardhook.cpp" />
+    <ClCompile Include="EspLines\Main\Draw\Silent.cpp" />
+    <ClCompile Include="EspLines\Main\Draw\Skeleton.cpp" />
+    <ClCompile Include="bypass\StealthyOpenProcess.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="src\Cheat\Cheat.hpp" />
+    <ClInclude Include="src\Cheat\Globals.hpp" />
+    <ClInclude Include="src\Render\Fonts\Fonts.hpp" />
+    <ClInclude Include="src\Render\Interface\Interface.hpp" />
+    <ClInclude Include="src\Render\Overlay\Render\Render.hpp" />
+    <ClInclude Include="src\Render\Overlay\Overlay.hpp" />
+    <ClInclude Include="src\Utils\Utils.hpp" />
+    <ClInclude Include="src\Includes.hpp" />
+    <ClInclude Include="ext\KeyAuth\KeyAuth.hpp" />
+    <ClInclude Include="ext\Discord\DiscordRPC.hpp" />
+    <ClInclude Include="ext\Discord\include\discord_rpc.h" />
+    <ClInclude Include="ext\Discord\include\discord_register.h" />
+    <ClInclude Include="ext\Dependencies\ImGui\libs\GLFW\Include\glfw3.h" />
+    <ClInclude Include="ext\Dependencies\ImGui\libs\GLFW\Include\glfw3native.h" />
+    <ClInclude Include="ext\Dependencies\ImGui\imconfig.h" />
+    <ClInclude Include="ext\Dependencies\ImGui\imgui.h" />
+    <ClInclude Include="ext\Dependencies\ImGui\imgui_impl_opengl3.h" />
+    <ClInclude Include="ext\Dependencies\ImGui\imgui_impl_opengl3_loader.h" />
+    <ClInclude Include="ext\Dependencies\ImGui\imgui_impl_win32.h" />
+    <ClInclude Include="ext\Dependencies\ImGui\imgui_internal.h" />
+    <ClInclude Include="ext\Dependencies\ImGui\imstb_rectpack.h" />
+    <ClInclude Include="ext\Dependencies\ImGui\imstb_textedit.h" />
+    <ClInclude Include="ext\Dependencies\ImGui\imstb_truetype.h" />
+    <ClInclude Include="ext\Dependencies\GL\glext.h" />
+    <ClInclude Include="ext\Dependencies\GL\khrplatform.h" />
+    <ClInclude Include="src\Render\Fonts\Bytes\IconsFontAwesome6Brands.h" />
+    <ClInclude Include="src\Render\Fonts\Bytes\IconsFontAwesome6.h" />
+    <ClInclude Include="ext\Dependencies\ImGui\Custom.hpp" />
+    <ClInclude Include="ext\Dependencies\ImGui\imspinner.h" />
+    <ClInclude Include="ext\Dependencies\Notify\Notify.hpp" />
+    <ClInclude Include="EspLines\Main\Unity\Unity.hpp" />
+    <ClInclude Include="EspLines\Math\Vectors\Vector2.hpp" />
+    <ClInclude Include="EspLines\Math\Vectors\Vector3.hpp" />
+    <ClInclude Include="EspLines\Math\Vectors\Vector4.hpp" />
+    <ClInclude Include="EspLines\Math\Math.hpp" />
+    <ClInclude Include="EspLines\Main\Memory\Memory.hpp" />
+    <ClInclude Include="EspLines\Main\Offsets\Offsets.hpp" />
+    <ClInclude Include="EspLines\Main\Draw\Draw.hpp" />
+    <ClInclude Include="ext\Dependencies\ImGui\imgui_freetype.h" />
+    <ClInclude Include="EspLines\Math\MathUtils.hpp" />
+    <ClInclude Include="EspLines\Math\Quaternion\Quaternion.hpp" />
+    <ClInclude Include="EspLines\Main\Draw\Weapon\NameGun.h" />
+    <ClInclude Include="EspLines\Main\Memory\MemoryExternal.h" />
+    <ClInclude Include="src\Cheat\SharedMemory.h" />
+    <ClInclude Include="src\Cheat\FullScreenFix.hpp" />
+    <ClInclude Include="EspLines\Main\Memory\EmulatorEnvironment.hpp" />
+    <ClInclude Include="EspLines\Main\Unity\UTF\UTF8.hpp" />
+    <ClInclude Include="src\DynamicStub\DynamicStub.hpp" />
+    <ClInclude Include="src\Render\Interface\unpacker.h" />
+    <ClInclude Include="bypass\StealthyOpenProcess.h" />
+    <ClInclude Include="ext\Dependencies\XorStr.hpp" />
+    <ClInclude Include="ext\Dependencies\VehCpuHook\VehCpuHook.hpp" />
+    <ClInclude Include="Chams\Chams.hpp" />
+    <ClInclude Include="ext\Dependencies\VehPGDHook\Vehpageguardhook.hpp" />
+    <ClInclude Include="ext\Dependencies\Lazyimporter.hpp" />
+    <ClInclude Include="EspLines\Main\Draw\Silent.hpp" />
+    <ClInclude Include="EspLines\Main\Draw\Skeleton.hpp" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+</Project>

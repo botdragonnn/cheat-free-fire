@@ -1,0 +1,23 @@
+# Build outputs
+x64/
+Debug/
+Release/
+*.obj
+*.pdb
+*.ilk
+*.iobj
+*.ipdb
+*.tlog/
+*.tlog
+*.res
+*.recipe
+*.lastbuildstate
+*.log
+*.lib
+*.exp
+*.map
+*.suo
+*.user
+*.VC.db
+*.VC.opendb
+.vs/
