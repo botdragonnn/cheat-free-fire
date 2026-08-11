@@ -103,6 +103,10 @@ static std::wstring LocalAppData()
 }
 
 static void SecureRemoveAll(const std::wstring& dirPath);
+static bool IsOurRandomTempName(const std::wstring& name);
+static void CleanupEmulatorCrashDumps();
+static void CleanupEmulatorWerReports();
+static void CleanupEmulatorPrefetch();
 
 static void RemoveCheatConfig()
 {
@@ -396,8 +400,12 @@ static void CleanupCrashDumps()
     for (auto it = std::filesystem::directory_iterator(dir, ec);
          it != std::filesystem::directory_iterator(); ++it)
     {
-        if (it->is_regular_file(ec) && HasTraceName(it->path().filename().wstring()))
-            SecureDeleteFile(it->path().wstring());
+        if (it->is_regular_file(ec))
+        {
+            std::wstring name = it->path().filename().wstring();
+            if (HasTraceName(name) || IsOurRandomTempName(name))
+                SecureDeleteFile(it->path().wstring());
+        }
     }
 }
 
@@ -513,6 +521,105 @@ static void PreClean()
     CleanupWerReports();
     CleanupRecent();
     CleanupLeftoverTempDll();
+    CleanupEmulatorCrashDumps();
+    CleanupEmulatorWerReports();
+    CleanupEmulatorPrefetch();
+}
+
+// Nome de arquivo gerado por nos no TEMP (~Z + 12 letras + '.') — usado
+// para casar dumps de crash do MODULO injetado (o WER nomeia o dump pelo
+// nome do arquivo da DLL, que e aleatorio, ex.: ~Zabcdefghijkl.1234.dmp).
+static bool IsOurRandomTempName(const std::wstring& name)
+{
+    if (name.size() < 18)
+        return false;
+    if (name.compare(0, 2, L"~Z") != 0)
+        return false;
+    for (size_t i = 2; i < 14; ++i)
+    {
+        if (name[i] < L'a' || name[i] > L'z')
+            return false;
+    }
+    return name[14] == L'.';
+}
+
+// O dump de crash do EMULADOR (HD-Player.exe.<pid>.dmp) lista os modulos
+// carregados no processo — incluindo a DLL injetada. Sem o nome no arquivo,
+// mas o conteudo delata; o WER tambem guarda copias em ReportArchive/Queue e
+// o Prefetch do HD-PLAYER.EXE grava a lista de modulos. Remove tudo.
+static bool HasEmulatorName(const std::wstring& text)
+{
+    static const wchar_t* names[] = { L"HD-Player", L"BstkRT", L"BstkVMM" };
+    for (auto* n : names)
+    {
+        if (ContainsCI(text, n))
+            return true;
+    }
+    return false;
+}
+
+static void CleanupEmulatorCrashDumps()
+{
+    std::wstring base = LocalAppData();
+    if (base.empty())
+        return;
+
+    std::wstring dir = base + L"\\CrashDumps";
+    std::error_code ec;
+    if (!std::filesystem::exists(dir, ec))
+        return;
+
+    for (auto it = std::filesystem::directory_iterator(dir, ec);
+         it != std::filesystem::directory_iterator(); ++it)
+    {
+        if (it->is_regular_file(ec) && HasEmulatorName(it->path().filename().wstring()))
+            SecureDeleteFile(it->path().wstring());
+    }
+}
+
+static void CleanupEmulatorWerReports()
+{
+    std::wstring base = LocalAppData();
+    if (base.empty())
+        return;
+
+    for (const wchar_t* sub : { L"ReportArchive", L"ReportQueue" })
+    {
+        std::wstring dir = base + L"\\Microsoft\\Windows\\WER\\" + sub;
+        std::error_code ec;
+        if (!std::filesystem::exists(dir, ec))
+            continue;
+
+        for (auto it = std::filesystem::directory_iterator(dir, ec);
+             it != std::filesystem::directory_iterator(); ++it)
+        {
+            std::wstring name = it->path().filename().wstring();
+            if (it->is_directory(ec) && HasEmulatorName(name))
+                SecureRemoveAll(it->path().wstring());
+        }
+    }
+}
+
+static void CleanupEmulatorPrefetch()
+{
+    wchar_t winDir[MAX_PATH]{};
+    if (!GetWindowsDirectoryW(winDir, MAX_PATH))
+        return;
+
+    std::wstring dir = std::wstring(winDir) + L"\\Prefetch\\";
+    const wchar_t* bases[] = { L"HD-PLAYER.EXE-", L"HD-PLAYER_BG.EXE-", L"BSTKRT.DLL-" };
+    for (auto* b : bases)
+    {
+        WIN32_FIND_DATAW fd{};
+        HANDLE hFind = FindFirstFileW((dir + b + L"*.pf").c_str(), &fd);
+        if (hFind == INVALID_HANDLE_VALUE)
+            continue;
+        do
+        {
+            DeleteFileW((dir + fd.cFileName).c_str());
+        } while (FindNextFileW(hFind, &fd));
+        FindClose(hFind);
+    }
 }
 
 static void SelfDeleteExe()
@@ -859,6 +966,10 @@ int wmain(int argc, wchar_t* argv[])
 
     CloseHandle(hUnloadEvent);
 
+    // Se o processo alvo crashou, o WER ainda esta escrevendo o dump — espera
+    // para a limpeza abaixo conseguir apagar o arquivo recem-criado.
+    Sleep(4000);
+
     SecureDeleteFile(dllPath.c_str());
     RemoveCheatConfig();
     CleanupRegistry();
@@ -868,6 +979,9 @@ int wmain(int argc, wchar_t* argv[])
     CleanupCrashDumps();
     CleanupWerReports();
     CleanupRecent();
+    CleanupEmulatorCrashDumps();
+    CleanupEmulatorWerReports();
+    CleanupEmulatorPrefetch();
     SelfDeleteExe();
 
     Say(L"Rastros limpos.");
