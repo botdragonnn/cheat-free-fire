@@ -102,6 +102,8 @@ static std::wstring LocalAppData()
     return std::wstring(buf);
 }
 
+static void SecureRemoveAll(const std::wstring& dirPath);
+
 static void RemoveCheatConfig()
 {
     std::wstring base = LocalAppData();
@@ -109,8 +111,7 @@ static void RemoveCheatConfig()
         return;
 
     std::filesystem::path dir = std::filesystem::path(base) / L"HwMon";
-    std::error_code ec;
-    std::filesystem::remove_all(dir, ec);
+    SecureRemoveAll(dir.wstring());
 }
 
 // Sobrescreve o conteudo do arquivo (2 passadas: zeros + 0xFF) ANTES de
@@ -364,6 +365,156 @@ static void CleanupPrefetch()
     FindClose(hFind);
 }
 
+// Nomes do cheat que nunca podem sobrar em lugar algum (dumps, WER, Recent).
+static bool HasTraceName(const std::wstring& text)
+{
+    static const wchar_t* names[] = {
+        L"HardwareMonitor", L"HwMonCore", L"ZmLoader", L"ZmInternal",
+    };
+    for (auto* n : names)
+    {
+        if (ContainsCI(text, n))
+            return true;
+    }
+    return false;
+}
+
+// Dumps de crash do WER (C:\Users\<u>\AppData\Local\CrashDumps) — se o
+// processo crashar (ex.: emulador derrubado), o WER salva
+// HardwareMonitor.exe.<pid>.dmp aqui. Sobrescreve + apaga.
+static void CleanupCrashDumps()
+{
+    std::wstring base = LocalAppData();
+    if (base.empty())
+        return;
+
+    std::wstring dir = base + L"\\CrashDumps";
+    std::error_code ec;
+    if (!std::filesystem::exists(dir, ec))
+        return;
+
+    for (auto it = std::filesystem::directory_iterator(dir, ec);
+         it != std::filesystem::directory_iterator(); ++it)
+    {
+        if (it->is_regular_file(ec) && HasTraceName(it->path().filename().wstring()))
+            SecureDeleteFile(it->path().wstring());
+    }
+}
+
+// Relatorios do WER (ReportArchive/ReportQueue) — pastas
+// "AppCrash_HardwareMonitor.exe_..." com o dump completo. Remove recursivo
+// com sobrescrita de conteudo antes.
+static void CleanupWerReports()
+{
+    std::wstring base = LocalAppData();
+    if (base.empty())
+        return;
+
+    for (const wchar_t* sub : { L"ReportArchive", L"ReportQueue" })
+    {
+        std::wstring dir = base + L"\\Microsoft\\Windows\\WER\\" + sub;
+        std::error_code ec;
+        if (!std::filesystem::exists(dir, ec))
+            continue;
+
+        for (auto it = std::filesystem::directory_iterator(dir, ec);
+             it != std::filesystem::directory_iterator(); ++it)
+        {
+            std::wstring name = it->path().filename().wstring();
+            if (it->is_directory(ec) && HasTraceName(name))
+                SecureRemoveAll(it->path().wstring());
+        }
+    }
+}
+
+// Atalhos de "Documentos Recentes" criados ao abrir o exe pelo Explorer.
+static void CleanupRecent()
+{
+    wchar_t buf[MAX_PATH]{};
+    if (SHGetFolderPathW(nullptr, CSIDL_RECENT, nullptr, SHGFP_TYPE_CURRENT, buf) != S_OK)
+        return;
+
+    std::wstring dir = std::wstring(buf) + L"\\";
+    WIN32_FIND_DATAW fd{};
+    HANDLE hFind = FindFirstFileW((dir + L"*.lnk").c_str(), &fd);
+    if (hFind == INVALID_HANDLE_VALUE)
+        return;
+
+    do
+    {
+        if (HasTraceName(fd.cFileName))
+            SecureDeleteFile(dir + fd.cFileName);
+    } while (FindNextFileW(hFind, &fd));
+    FindClose(hFind);
+}
+
+// Copias da DLL deixadas no TEMP por sessoes anteriores que morreram antes
+// da limpeza (crash/kill do loader). Padrao de nome gerado por RandomFileName
+// (~Z + 12 letras + .dll = 18 chars) — especifico demais para colidir com
+// arquivo de usuario; apaga so os com mais de 10 minutos (nunca a copia da
+// sessao atual, que nem existe quando isso roda no inicio).
+static void CleanupLeftoverTempDll()
+{
+    wchar_t tmp[MAX_PATH]{};
+    GetTempPathW(MAX_PATH, tmp);
+    std::wstring dir(tmp);
+
+    WIN32_FIND_DATAW fd{};
+    HANDLE hFind = FindFirstFileW((dir + L"~Z*.dll").c_str(), &fd);
+    if (hFind == INVALID_HANDLE_VALUE)
+        return;
+
+    FILETIME nowFt{};
+    GetSystemTimeAsFileTime(&nowFt);
+    ULARGE_INTEGER now{};
+    now.HighPart = nowFt.dwHighDateTime;
+    now.LowPart = nowFt.dwLowDateTime;
+    const ULONGLONG kMaxAge = (ULONGLONG)10 * 60 * 10000000; // 10 minutos
+
+    do
+    {
+        std::wstring name = fd.cFileName;
+        if (name.size() != 18 || name.compare(0, 2, L"~Z") != 0)
+            continue;
+
+        bool letters = true;
+        for (size_t i = 2; i < 14; ++i)
+        {
+            if (name[i] < L'a' || name[i] > L'z') { letters = false; break; }
+        }
+        if (!letters)
+            continue;
+
+        ULARGE_INTEGER age{};
+        age.LowPart = fd.ftLastWriteTime.dwLowDateTime;
+        age.HighPart = fd.ftLastWriteTime.dwHighDateTime;
+        if (now.QuadPart > age.QuadPart && (now.QuadPart - age.QuadPart) < kMaxAge)
+            continue;
+
+        SecureDeleteFile(dir + name);
+    } while (FindNextFileW(hFind, &fd));
+    FindClose(hFind);
+}
+
+// Limpeza de seguranca rodada ANTES de tudo: apaga rastros de sessoes
+// anteriores que morreram sem limpar (crash/kill), para que uma busca por
+// rastros nunca encontre nada — mesmo um dump de crash antigo.
+static void PreClean()
+{
+    wchar_t tmp[MAX_PATH]{};
+    GetTempPathW(MAX_PATH, tmp);
+    SecureDeleteFile(std::wstring(tmp) + L"HwMon.log");
+    RemoveCheatConfig();
+    CleanupRegistry();
+    CleanupRunMRU();
+    CleanupUserAssist();
+    CleanupPrefetch();
+    CleanupCrashDumps();
+    CleanupWerReports();
+    CleanupRecent();
+    CleanupLeftoverTempDll();
+}
+
 static void SelfDeleteExe()
 {
     std::wstring exeDir = ExecutableDirectory();
@@ -382,10 +533,10 @@ static void SelfDeleteExe()
     // Artefatos do cheat na pasta do exe (dll, pdb, obj, map, tlog...)
     CleanupKnownFiles(exeDir);
 
-    // Log diagnostico criado pela DLL no TEMP
+    // Log diagnostico criado pela DLL no TEMP (sobrescreve antes de apagar)
     wchar_t tmp[MAX_PATH]{};
     GetTempPathW(MAX_PATH, tmp);
-    DeleteFileW((std::wstring(tmp) + L"HwMon.log").c_str());
+    SecureDeleteFile(std::wstring(tmp) + L"HwMon.log");
 
     if (isProjectBuildDir)
     {
@@ -583,6 +734,10 @@ int wmain(int argc, wchar_t* argv[])
 {
     EnableDebugPrivilege();
 
+    // Remove rastros de sessoes anteriores (crash/kill sem limpeza) antes
+    // de qualquer outra coisa.
+    PreClean();
+
     std::wstring dllSource = FindDllPath();
     if (dllSource.empty())
     {
@@ -600,7 +755,7 @@ int wmain(int argc, wchar_t* argv[])
     HANDLE hUnloadEvent = CreateEventW(nullptr, TRUE, FALSE, L"HwMonEvt");
     if (!hUnloadEvent)
     {
-        DeleteFileW(dllPath.c_str());
+        SecureDeleteFile(dllPath.c_str());
         Fail(L"ERRO: falha ao criar evento de unload.");
         return 1;
     }
@@ -618,7 +773,7 @@ int wmain(int argc, wchar_t* argv[])
         else
         {
             CloseHandle(hUnloadEvent);
-            DeleteFileW(dllPath.c_str());
+            SecureDeleteFile(dllPath.c_str());
             return PrintUsage(argv[0]);
         }
     }
@@ -637,7 +792,7 @@ int wmain(int argc, wchar_t* argv[])
         if (!targetPid)
         {
             CloseHandle(hUnloadEvent);
-            DeleteFileW(dllPath.c_str());
+            SecureDeleteFile(dllPath.c_str());
             Fail(L"ERRO: nenhum processo com BstkVMM.dll encontrado (emulador nao esta rodando?).");
             return 1;
         }
@@ -660,7 +815,7 @@ int wmain(int argc, wchar_t* argv[])
         if (!targetPid)
         {
             CloseHandle(hUnloadEvent);
-            DeleteFileW(dllPath.c_str());
+            SecureDeleteFile(dllPath.c_str());
             Fail(L"ERRO: processo " + byName + L" nao encontrado.");
             return 1;
         }
@@ -672,7 +827,7 @@ int wmain(int argc, wchar_t* argv[])
     {
         DWORD err = GetLastError();
         CloseHandle(hUnloadEvent);
-        DeleteFileW(dllPath.c_str());
+        SecureDeleteFile(dllPath.c_str());
         Fail(L"ERRO: falha na injecao (erro " + std::to_wstring(err) + L"). Execute como administrador?");
         return 1;
     }
@@ -704,12 +859,15 @@ int wmain(int argc, wchar_t* argv[])
 
     CloseHandle(hUnloadEvent);
 
-    DeleteFileW(dllPath.c_str());
+    SecureDeleteFile(dllPath.c_str());
     RemoveCheatConfig();
     CleanupRegistry();
     CleanupRunMRU();
     CleanupUserAssist();
     CleanupPrefetch();
+    CleanupCrashDumps();
+    CleanupWerReports();
+    CleanupRecent();
     SelfDeleteExe();
 
     Say(L"Rastros limpos.");
