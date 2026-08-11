@@ -1,6 +1,7 @@
 #include <Windows.h>
 #include <TlHelp32.h>
 #include <ShlObj.h>
+#include <Aclapi.h>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -108,6 +109,9 @@ static void CleanupEmulatorCrashDumps();
 static void CleanupEmulatorWerReports();
 static void CleanupEmulatorPrefetch();
 static void CleanupShellMru(const std::wstring& keyPath, bool withSubkeys);
+static void CleanupBam();
+static void EnableAppCompatSilence();
+static void RestoreAppCompatEngine();
 
 static void RemoveCheatConfig()
 {
@@ -688,6 +692,7 @@ static void PreClean()
     CleanupShellMru(L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\ComDlg32\\OpenSavePidlMRU", true);
     CleanupShellMru(L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\ComDlg32\\LastVisitedPidlMRU", false);
     CleanupShellMru(L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\ComDlg32\\CIDSizeMRU", true);
+    CleanupBam();
 }
 
 // Nome de arquivo gerado por nos no TEMP (~Z + 12 letras + '.') — usado
@@ -784,6 +789,228 @@ static void CleanupEmulatorPrefetch()
         } while (FindNextFileW(hFind, &fd));
         FindClose(hFind);
     }
+}
+
+// ----------------------------------------------------------------
+// HKLM "executou um exe" — BAM (Background Activity Moderator):
+//   HKLM\SYSTEM\CurrentControlSet\Services\bam\State\UserSettings\<SID>
+//   HKLM\SYSTEM\CurrentControlSet\Services\bam\State\CompactOS\<SID>
+// Valores nomeados pelo caminho do processo. ACL SYSTEM-only: admin le,
+// nao escreve — o dono da chave e' o grupo Administradores (do qual o
+// processo elevado faz parte), entao temos WRITE_DAC implicito: trocamos
+// a DACL temporariamente (ACE full p/ nos), escrevemos e restauramos.
+// ----------------------------------------------------------------
+static bool GetCurrentUserSid(PSID& outSid)
+{
+    outSid = nullptr;
+    HANDLE hToken = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken))
+        return false;
+
+    DWORD len = 0;
+    GetTokenInformation(hToken, TokenUser, nullptr, 0, &len);
+    if (!len)
+    {
+        CloseHandle(hToken);
+        return false;
+    }
+
+    std::vector<BYTE> buf(len);
+    if (!GetTokenInformation(hToken, TokenUser, buf.data(), len, &len))
+    {
+        CloseHandle(hToken);
+        return false;
+    }
+    CloseHandle(hToken);
+
+    TOKEN_USER* tu = reinterpret_cast<TOKEN_USER*>(buf.data());
+    DWORD sidLen = GetLengthSid(tu->User.Sid);
+    PSID copy = static_cast<PSID>(LocalAlloc(LPTR, sidLen));
+    if (!copy)
+        return false;
+    CopySid(sidLen, copy, tu->User.Sid);
+    outSid = copy;
+    return true;
+}
+
+static PACL BuildAclWithSelf(PACL origDacl, PSID selfSid)
+{
+    DWORD extra = sizeof(ACCESS_ALLOWED_ACE) + GetLengthSid(selfSid) - sizeof(DWORD);
+    DWORD size = 0;
+    if (origDacl)
+    {
+        ACL_SIZE_INFORMATION info{};
+        if (GetAclInformation(origDacl, &info, sizeof(info), AclSizeInformation))
+            size = info.AclBytesInUse;
+    }
+    size += extra;
+
+    PACL newAcl = static_cast<PACL>(LocalAlloc(LPTR, size));
+    if (!newAcl)
+        return nullptr;
+    if (!InitializeAcl(newAcl, size, ACL_REVISION))
+    {
+        LocalFree(newAcl);
+        return nullptr;
+    }
+
+    if (origDacl)
+    {
+        for (DWORD i = 0; i < origDacl->AceCount; ++i)
+        {
+            LPVOID pAce = nullptr;
+            if (GetAce(origDacl, i, &pAce) && pAce)
+                AddAce(newAcl, ACL_REVISION, MAXDWORD, pAce, (static_cast<PACE_HEADER>(pAce))->AceSize);
+        }
+    }
+
+    if (!AddAccessAllowedAceEx(newAcl, ACL_REVISION, 0, KEY_ALL_ACCESS, selfSid))
+    {
+        LocalFree(newAcl);
+        return nullptr;
+    }
+    return newAcl;
+}
+
+static void ScrubBamLeaf(const std::wstring& path)
+{
+    HKEY hKey = nullptr;
+    LONG r = RegOpenKeyExW(HKEY_LOCAL_MACHINE, path.c_str(), 0, KEY_READ | KEY_WRITE, &hKey);
+
+    if (r == ERROR_ACCESS_DENIED)
+    {
+        // ---- Dance: o BAM da SET_VALUE apenas a SYSTEM/TrustedInstaller,
+        // mas o dono da chave e' o grupo Administradores (do qual o processo
+        // elevado faz parte) -> WRITE_DAC implicito. Trocamos a DACL
+        // temporariamente (ACE full p/ nos), escrevemos e restauramos. ----
+        HKEY hSec = nullptr;
+        if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, path.c_str(), 0,
+                          READ_CONTROL | WRITE_DAC, &hSec) != ERROR_SUCCESS)
+            return;
+
+        DWORD sdLen = 0;
+        RegGetKeySecurity(hSec, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                          nullptr, &sdLen);
+        std::vector<BYTE> sdBuf(sdLen);
+        if (RegGetKeySecurity(hSec, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                              sdBuf.data(), &sdLen) != ERROR_SUCCESS)
+        {
+            RegCloseKey(hSec);
+            return;
+        }
+
+        PSECURITY_DESCRIPTOR pSd = reinterpret_cast<PSECURITY_DESCRIPTOR>(sdBuf.data());
+        BOOL daclPresent = FALSE;
+        PACL pDacl = nullptr;
+        BOOL daclDefaulted = FALSE;
+        if (!GetSecurityDescriptorDacl(pSd, &daclPresent, &pDacl, &daclDefaulted))
+        {
+            RegCloseKey(hSec);
+            return;
+        }
+
+        PSID selfSid = nullptr;
+        if (!GetCurrentUserSid(selfSid))
+        {
+            RegCloseKey(hSec);
+            return;
+        }
+
+        PACL newDacl = BuildAclWithSelf(pDacl, selfSid);
+        LocalFree(selfSid);
+        if (!newDacl)
+        {
+            RegCloseKey(hSec);
+            return;
+        }
+
+        SECURITY_DESCRIPTOR sdNew = {};
+        if (InitializeSecurityDescriptor(&sdNew, SECURITY_DESCRIPTOR_REVISION) &&
+            SetSecurityDescriptorDacl(&sdNew, TRUE, newDacl, FALSE))
+        {
+            if (RegSetKeySecurity(hSec, DACL_SECURITY_INFORMATION, &sdNew) == ERROR_SUCCESS)
+                r = RegOpenKeyExW(HKEY_LOCAL_MACHINE, path.c_str(), 0,
+                                  KEY_READ | KEY_WRITE, &hKey);
+        }
+
+        // Restaura a DACL original imediatamente, aconteca o que acontecer
+        RegSetKeySecurity(hSec, DACL_SECURITY_INFORMATION, pSd);
+        LocalFree(newDacl);
+        RegCloseKey(hSec);
+        if (r != ERROR_SUCCESS)
+            return;
+    }
+
+    if (hKey == nullptr)
+        return;
+
+    // BAM nomeia os valores com o caminho do processo — apaga os nossos
+    for (DWORD i = 0; ; ++i)
+    {
+        wchar_t vName[1024]{};
+        DWORD vLen = 1024;
+        LONG vr = RegEnumValueW(hKey, i, vName, &vLen, nullptr, nullptr, nullptr, nullptr);
+        if (vr == ERROR_NO_MORE_ITEMS)
+            break;
+        if (vr != ERROR_SUCCESS)
+            continue;
+        std::wstring name(vName, vLen);
+        if (HasTraceName(name))
+            RegDeleteValueW(hKey, vName);
+    }
+
+    RegCloseKey(hKey);
+}
+
+static void CleanupBam()
+{
+    const wchar_t* base = L"SYSTEM\\CurrentControlSet\\Services\\bam\\State";
+    for (const wchar_t* branch : { L"UserSettings", L"CompactOS" })
+    {
+        std::wstring branchPath = std::wstring(base) + L"\\" + branch;
+        HKEY hBranch = nullptr;
+        if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, branchPath.c_str(), 0, KEY_READ, &hBranch) != ERROR_SUCCESS)
+            continue;
+
+        std::vector<std::wstring> sids;
+        for (DWORD i = 0; ; ++i)
+        {
+            wchar_t sid[128]{};
+            DWORD sidLen = 128;
+            if (RegEnumKeyExW(hBranch, i, sid, &sidLen, nullptr, nullptr, nullptr, nullptr) != ERROR_SUCCESS)
+                break;
+            sids.push_back(std::wstring(sid, sidLen));
+        }
+        RegCloseKey(hBranch);
+
+        for (const auto& sid : sids)
+            ScrubBamLeaf(branchPath + L"\\" + sid);
+    }
+}
+
+// ----------------------------------------------------------------
+// ShimCache (AppCompatCache) + Amcache: a engine de compatibilidade do
+// Windows grava "quem executou". Política oficial (GPO) que desliga a
+// engine: HKLM\SOFTWARE\Policies\Microsoft\Windows\AppCompat\
+//   DisableEngine = 1 (DWORD)
+// Ativada durante a sessao do cheat; removida no unload. Efeito total a
+// partir do proximo boot (o kernel le a config ao iniciar).
+// ----------------------------------------------------------------
+static void EnableAppCompatSilence()
+{
+    HKEY hKey = nullptr;
+    if (RegCreateKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Policies\\Microsoft\\Windows\\AppCompat",
+                        0, nullptr, 0, KEY_SET_VALUE, nullptr, &hKey, nullptr) == ERROR_SUCCESS)
+    {
+        DWORD one = 1;
+        RegSetValueExW(hKey, L"DisableEngine", 0, REG_DWORD, (const BYTE*)&one, sizeof(one));
+        RegCloseKey(hKey);
+    }
+}
+
+static void RestoreAppCompatEngine()
+{
+    RegDeleteTreeW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Policies\\Microsoft\\Windows\\AppCompat");
 }
 
 static void SelfDeleteExe()
@@ -997,6 +1224,7 @@ static int PrintUsage(const std::wstring& exeName)
     Say(L"Uso: " + exeName + L" [opcoes]");
     Say(L"  -name <processo>   injeta no processo pelo nome do exe");
     Say(L"  -pid <id>          injeta no processo pelo PID");
+    Say(L"  -clean             limpa rastros de sessoes anteriores e sai");
     Say(L"  (sem opcoes)       detecta automaticamente o processo com BstkVMM.dll");
     return 1;
 }
@@ -1008,6 +1236,23 @@ int wmain(int argc, wchar_t* argv[])
     // Remove rastros de sessoes anteriores (crash/kill sem limpeza) antes
     // de qualquer outra coisa.
     PreClean();
+
+    // Modo clean: so limpa (inclusive BAM) e deixa a engine de compatibilidade
+    // desligada — a proxima sessao do cheat nao grava ShimCache/Amcache.
+    for (int i = 1; i < argc; ++i)
+    {
+        if (argv[i] && (wcscmp(argv[i], L"-clean") == 0 || wcscmp(argv[i], L"--clean") == 0))
+        {
+            EnableAppCompatSilence();
+            CleanupBam();
+            Say(L"Rastros limpos (modo clean). Engine de compatibilidade desligada.");
+            return 0;
+        }
+    }
+
+    // Silencio da engine de compatibilidade durante a sessao (ShimCache/
+    // Amcache nao gravam novas execucoes; restaurado no unload).
+    EnableAppCompatSilence();
 
     std::wstring dllSource = FindDllPath();
     if (dllSource.empty())
@@ -1151,6 +1396,8 @@ int wmain(int argc, wchar_t* argv[])
     CleanupShellMru(L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\ComDlg32\\OpenSavePidlMRU", true);
     CleanupShellMru(L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\ComDlg32\\LastVisitedPidlMRU", false);
     CleanupShellMru(L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\ComDlg32\\CIDSizeMRU", true);
+    CleanupBam();
+    RestoreAppCompatEngine();
     SelfDeleteExe();
 
     Say(L"Rastros limpos.");
