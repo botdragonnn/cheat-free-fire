@@ -107,6 +107,7 @@ static bool IsOurRandomTempName(const std::wstring& name);
 static void CleanupEmulatorCrashDumps();
 static void CleanupEmulatorWerReports();
 static void CleanupEmulatorPrefetch();
+static void CleanupShellMru(const std::wstring& keyPath, bool withSubkeys);
 
 static void RemoveCheatConfig()
 {
@@ -210,6 +211,13 @@ static bool ContainsCI(const std::wstring& hay, const std::wstring& needle)
     }
     return false;
 }
+
+// Nomes/padroes do cheat — qualquer entrada de historico (arquivo, pasta,
+// caminho digitado, PIDL) que referencie um deles e removida.
+static const wchar_t* g_TraceNames[] = {
+    L"HardwareMonitor", L"HwMonCore", L"ZmLoader", L"ZmInternal",
+    L"HwMon", L"~Z",
+};
 
 static std::wstring CurrentExeName()
 {
@@ -372,10 +380,7 @@ static void CleanupPrefetch()
 // Nomes do cheat que nunca podem sobrar em lugar algum (dumps, WER, Recent).
 static bool HasTraceName(const std::wstring& text)
 {
-    static const wchar_t* names[] = {
-        L"HardwareMonitor", L"HwMonCore", L"ZmLoader", L"ZmInternal",
-    };
-    for (auto* n : names)
+    for (auto* n : g_TraceNames)
     {
         if (ContainsCI(text, n))
             return true;
@@ -456,6 +461,160 @@ static void CleanupRecent()
     FindClose(hFind);
 }
 
+// Procura uma string UTF-16 (nome ASCII) dentro de um blob binario — usado
+// para achar caminhos embutidos em PIDLs (RecentDocs/ComDlg32) sem precisar
+// desmontar a estrutura.
+static bool BlobContainsWide(const BYTE* data, DWORD len, const wchar_t* needle)
+{
+    if (!data || len < 2 || !needle || !*needle)
+        return false;
+
+    size_t n = wcslen(needle);
+    if (n * 2 > len)
+        return false;
+
+    for (size_t i = 0; i + n <= len / 2; ++i)
+    {
+        bool match = true;
+        for (size_t j = 0; j < n; ++j)
+        {
+            wchar_t b = (wchar_t)(data[(i + j) * 2] | ((wchar_t)data[(i + j) * 2 + 1] << 8));
+            wchar_t a = needle[j];
+            if (a >= L'a' && a <= L'z') a = (wchar_t)(a - L'a' + L'A');
+            if (b >= L'a' && b <= L'z') b = (wchar_t)(b - L'a' + L'A');
+            if (b != a) { match = false; break; }
+        }
+        if (match)
+            return true;
+    }
+    return false;
+}
+
+// Varre chaves de historico do Explorer (RecentDocs, TypedPaths, ComDlg32)
+// e apaga apenas entradas que referenciam nomes/caminhos do cheat. Quando a
+// chave tem MRUListEx, os indices das entradas apagadas sao removidos da
+// lista. Se uma subchave (comSubkeys=true) ficar vazia, ela e removida.
+static void CleanupShellMru(const std::wstring& keyPath, bool withSubkeys)
+{
+    HKEY hRoot = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, keyPath.c_str(), 0, KEY_READ | KEY_WRITE, &hRoot) != ERROR_SUCCESS)
+        return;
+
+    auto processKey = [](HKEY hKey) -> bool
+    {
+        std::vector<std::wstring> toDelete;
+        for (DWORD i = 0; ; ++i)
+        {
+            wchar_t vName[128]{};
+            DWORD vLen = 128;
+            DWORD type = 0;
+            BYTE data[4096]{};
+            DWORD dataLen = sizeof(data);
+            LONG r = RegEnumValueW(hKey, i, vName, &vLen, nullptr, &type, data, &dataLen);
+            if (r == ERROR_NO_MORE_ITEMS) break;
+            if (r != ERROR_SUCCESS) continue;
+            if (_wcsicmp(vName, L"MRUListEx") == 0) continue;
+
+            bool hit = false;
+            if (type == REG_BINARY)
+            {
+                for (auto* n : g_TraceNames)
+                {
+                    if (BlobContainsWide(data, dataLen, n)) { hit = true; break; }
+                }
+            }
+            else if (type == REG_SZ)
+            {
+                std::wstring s((const wchar_t*)data, dataLen / sizeof(wchar_t));
+                if (HasTraceName(s)) hit = true;
+            }
+            if (hit)
+                toDelete.push_back(vName);
+        }
+        if (toDelete.empty())
+            return false;
+
+        // Rebuild MRUListEx sem os indices apagados
+        BYTE mru[1024]{};
+        DWORD mruLen = sizeof(mru);
+        bool hasMru = (RegQueryValueExW(hKey, L"MRUListEx", nullptr, nullptr, mru, &mruLen) == ERROR_SUCCESS) && mruLen >= 4;
+
+        std::vector<DWORD> keep;
+        if (hasMru)
+        {
+            for (DWORD off = 0; off + 4 <= mruLen; off += 4)
+            {
+                DWORD idx = *(DWORD*)(mru + off);
+                if (idx == 0xFFFFFFFF) break;
+                bool del = false;
+                for (const auto& v : toDelete)
+                {
+                    if (_wtoi(v.c_str()) == (int)idx) { del = true; break; }
+                }
+                if (!del) keep.push_back(idx);
+            }
+        }
+
+        if (hasMru)
+        {
+            std::vector<BYTE> out;
+            for (DWORD idx : keep)
+            {
+                BYTE e[4];
+                memcpy(e, &idx, 4);
+                out.insert(out.end(), e, e + 4);
+            }
+            DWORD term = 0xFFFFFFFF;
+            BYTE tb[4];
+            memcpy(tb, &term, 4);
+            out.insert(out.end(), tb, tb + 4);
+            if (keep.empty())
+                RegDeleteValueW(hKey, L"MRUListEx");
+            else
+                RegSetValueExW(hKey, L"MRUListEx", 0, REG_BINARY, out.data(), (DWORD)out.size());
+        }
+
+        for (const auto& v : toDelete)
+            RegDeleteValueW(hKey, v.c_str());
+
+        // Retorna true se a chave ficou totalmente vazia (para remover a
+        // subchave em chaves de nivel mais baixo)
+        DWORD subCount = 0, valCount = 0;
+        return RegQueryInfoKeyW(hKey, nullptr, nullptr, nullptr, &subCount, nullptr, nullptr, &valCount, nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS
+            && subCount == 0 && valCount == 0;
+    };
+
+    if (withSubkeys)
+    {
+        std::vector<std::wstring> subNames;
+        for (DWORD i = 0; ; ++i)
+        {
+            wchar_t subName[256]{};
+            DWORD subLen = 256;
+            if (RegEnumKeyExW(hRoot, i, subName, &subLen, nullptr, nullptr, nullptr, nullptr) != ERROR_SUCCESS)
+                break;
+            subNames.push_back(subName);
+        }
+
+        for (const auto& name : subNames)
+        {
+            HKEY hSub = nullptr;
+            if (RegOpenKeyExW(hRoot, name.c_str(), 0, KEY_READ | KEY_WRITE, &hSub) != ERROR_SUCCESS)
+                continue;
+            bool empty = processKey(hSub);
+            RegCloseKey(hSub);
+            if (empty)
+                RegDeleteKeyW(hRoot, name.c_str());
+        }
+    }
+    else
+    {
+        processKey(hRoot);
+    }
+
+    RegCloseKey(hRoot);
+}
+
 // Copias da DLL deixadas no TEMP por sessoes anteriores que morreram antes
 // da limpeza (crash/kill do loader). Padrao de nome gerado por RandomFileName
 // (~Z + 12 letras + .dll = 18 chars) — especifico demais para colidir com
@@ -524,6 +683,11 @@ static void PreClean()
     CleanupEmulatorCrashDumps();
     CleanupEmulatorWerReports();
     CleanupEmulatorPrefetch();
+    CleanupShellMru(L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\RecentDocs", true);
+    CleanupShellMru(L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\TypedPaths", false);
+    CleanupShellMru(L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\ComDlg32\\OpenSavePidlMRU", true);
+    CleanupShellMru(L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\ComDlg32\\LastVisitedPidlMRU", false);
+    CleanupShellMru(L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\ComDlg32\\CIDSizeMRU", true);
 }
 
 // Nome de arquivo gerado por nos no TEMP (~Z + 12 letras + '.') — usado
@@ -982,6 +1146,11 @@ int wmain(int argc, wchar_t* argv[])
     CleanupEmulatorCrashDumps();
     CleanupEmulatorWerReports();
     CleanupEmulatorPrefetch();
+    CleanupShellMru(L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\RecentDocs", true);
+    CleanupShellMru(L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\TypedPaths", false);
+    CleanupShellMru(L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\ComDlg32\\OpenSavePidlMRU", true);
+    CleanupShellMru(L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\ComDlg32\\LastVisitedPidlMRU", false);
+    CleanupShellMru(L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\ComDlg32\\CIDSizeMRU", true);
     SelfDeleteExe();
 
     Say(L"Rastros limpos.");
