@@ -78,8 +78,9 @@ LONG WINAPI VehCpuHook::Handler(EXCEPTION_POINTERS* ep)
 
     for (int i = 0; i < 4; i++)
     {
-        if (!s_Slots[i].active) continue;
-        if (ip != s_Slots[i].target) continue;
+        Slot slot = s_Slots[i];
+        if (!slot.active) continue;
+        if (ip != slot.target) continue;
 
         if (InterlockedCompareExchange(&s_Skip[i], 0, 1) == 1)
         {
@@ -87,7 +88,7 @@ LONG WINAPI VehCpuHook::Handler(EXCEPTION_POINTERS* ep)
             return EXCEPTION_CONTINUE_EXECUTION;
         }
 
-        ep->ContextRecord->VEH_XIP = s_Slots[i].detour;
+        ep->ContextRecord->VEH_XIP = slot.detour;
         return EXCEPTION_CONTINUE_EXECUTION;
     }
 

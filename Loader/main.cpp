@@ -368,6 +368,17 @@ static void SelfDeleteExe()
 {
     std::wstring exeDir = ExecutableDirectory();
 
+    // Se a pasta do exe for a pasta de build deste projeto (marcador do
+    // vcxproj presente), limpa tambem os artefatos da DLL na raiz do projeto
+    // (x64\Release) e agenda a remocao da pasta do exe inteira.
+    // OBS: o check tem que vir ANTES do CleanupKnownFiles — o marcador
+    // FileListAbsolute esta na lista de arquivos conhecidos e seria deletado,
+    // derrubando o check e impedindo o rmdir da pasta.
+    bool isProjectBuildDir = false;
+    std::error_code ec;
+    if (std::filesystem::exists(exeDir + L"\\ZmLoader.vcxproj.FileListAbsolute.txt", ec))
+        isProjectBuildDir = true;
+
     // Artefatos do cheat na pasta do exe (dll, pdb, obj, map, tlog...)
     CleanupKnownFiles(exeDir);
 
@@ -375,14 +386,6 @@ static void SelfDeleteExe()
     wchar_t tmp[MAX_PATH]{};
     GetTempPathW(MAX_PATH, tmp);
     DeleteFileW((std::wstring(tmp) + L"HwMon.log").c_str());
-
-    // Se a pasta do exe for a pasta de build deste projeto (marcador do
-    // vcxproj presente), limpa tambem os artefatos da DLL na raiz do projeto
-    // (x64\Release) e agenda a remocao da pasta do exe inteira.
-    bool isProjectBuildDir = false;
-    std::error_code ec;
-    if (std::filesystem::exists(exeDir + L"\\ZmLoader.vcxproj.FileListAbsolute.txt", ec))
-        isProjectBuildDir = true;
 
     if (isProjectBuildDir)
     {

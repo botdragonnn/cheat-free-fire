@@ -472,9 +472,11 @@ void Data::ReadLoop( )
 				// Um fim de partida legitimo ainda limpa apos esses frames.
 				if ( ++emptyFrames >= 900 )
 				{
+					// JA estamos sob o lock de m_Mutex acima (linha do
+					// std::lock_guard externo); relock do mesmo mutex nao
+					// recursivo aqui = deadlock/hard-freeze do processo.
 					emptyFrames = 0;
 					DiagLog( "[diag] empty-clear: snapshot apagado apos %d frames vazios frescos", 900 );
-					std::lock_guard<std::mutex> lock( m_Mutex );
 					m_Players.swap( tempPlayers );
 					m_SnapshotFresh = true;
 				}
