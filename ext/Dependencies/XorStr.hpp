@@ -75,7 +75,7 @@ namespace FrameWork {
         namespace detail {
 
             // murmurhash3 finalizer — excelente avalanche
-            FW_FORCEINLINE constexpr std::uint32_t murmur_mix(std::uint32_t h) noexcept
+            FW_FORCEINLINE consteval std::uint32_t murmur_mix(std::uint32_t h) noexcept
             {
                 h ^= h >> 16;
                 h *= 0x85ebca6bu;
@@ -85,7 +85,7 @@ namespace FrameWork {
                 return h;
             }
 
-            FW_FORCEINLINE constexpr std::uint64_t murmur_mix64(std::uint64_t k) noexcept
+            FW_FORCEINLINE consteval std::uint64_t murmur_mix64(std::uint64_t k) noexcept
             {
                 k ^= k >> 33;
                 k *= 0xff51afd7ed558ccdULL;
@@ -98,7 +98,7 @@ namespace FrameWork {
         } // namespace detail
 
         template<std::uint32_t Seed, std::uint32_t Counter, std::uint32_t Line>
-        FW_FORCEINLINE constexpr std::uint32_t key4() noexcept
+        FW_FORCEINLINE consteval std::uint32_t key4() noexcept
         {
             // seed base: combina Seed + Counter + Line antes do FNV
             std::uint32_t value = Seed;
@@ -114,7 +114,7 @@ namespace FrameWork {
         }
 
         template<std::size_t S, std::uint32_t Counter, std::uint32_t Line>
-        FW_FORCEINLINE constexpr std::uint64_t key8()
+        FW_FORCEINLINE consteval std::uint64_t key8()
         {
             constexpr auto lo = key4<2166136261u + static_cast<std::uint32_t>(S), Counter, Line>();
             constexpr auto hi = key4<lo, Counter ^ 0xDEADBEEF, Line ^ 0xCAFEBABE>();
@@ -126,7 +126,7 @@ namespace FrameWork {
         //  XOR da string em blocos de 8 bytes em compile-time
         // ============================================================================
         template<std::size_t N, class CharT>
-        FW_FORCEINLINE constexpr std::uint64_t
+        FW_FORCEINLINE consteval std::uint64_t
             load_xored_str8(std::uint64_t key, std::size_t idx, const CharT* str) noexcept
         {
             using cast_type = typename std::make_unsigned<CharT>::type;

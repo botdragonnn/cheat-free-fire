@@ -613,6 +613,10 @@ void Data::Draw( int width, int height, bool N32, bool V31 )
 	// sem leitura fresca, em vez de ficar grudado na tela.
 	auto DrawFrozenEsp = [ ] ( const Matrix4x4& liveMatrix )
 	{
+		// Master "ESP Player": com o toggle desligado nada do overlay congelado
+		// e desenhado (aim/silent nao dependem deste caminho).
+		if ( !g_Globals.Visuals.ESP.Enabled ) return;
+
 		// Snapshot sem leitura fresca ha mais de ~3s nao e desenhado: isso e
 		// transicao real de partida/loading, e o ESP volta sozinho quando a
 		// leitura renovar (mesmo comportamento do cheat de referencia, que
@@ -664,6 +668,7 @@ void Data::Draw( int width, int height, bool N32, bool V31 )
 	const auto& ESP = g_Globals.Visuals.ESP;
 	const auto& AimCfg = g_Globals.AimBot;
 	const float fovSq = AimCfg.Fov * AimCfg.Fov;
+	const float silentFovSq = g_Globals.Silent.Fov * g_Globals.Silent.Fov;
 
 	ImDrawList* DL = ImGui::GetForegroundDrawList( );
 	const ImVec2 screenCenter( ( float )ScreenWidth * 0.5f, ( float )ScreenHeight * 0.5f );
@@ -671,6 +676,11 @@ void Data::Draw( int width, int height, bool N32, bool V31 )
 	float ClosestDistSq = FLT_MAX;
 	uintptr_t ClosestEntity = 0;
 	short ClosestHP = 0;
+
+	// Alvo do silent: selecao independente, com FOV/distancia proprios
+	// (nao herda nada do AimCfg).
+	float SilentDistSq = FLT_MAX;
+	uintptr_t SilentClosestEntity = 0;
 
 	int enemyCountFrame = 0;
 	ImVec2 closestHead2D( 0.f, 0.f );
@@ -1025,6 +1035,87 @@ void Data::Draw( int width, int height, bool N32, bool V31 )
 	const float centerX = ( float )ScreenWidth * 0.5f;
 	const float centerY = ( float )ScreenHeight * 0.5f;
 
+	// ==================== Aimbot/Silent target selection ====================
+	// Desacoplado do loop de render: roda mesmo com "ESP Player" (master do
+	// Visuals.ESP) desligado, porque silent, boneswap, magnet e rage dependem
+	// de ClosestEntity. Só mira quando o snapshot é fresco (leitura do frame
+	// atual). Em falha transitória o ESP continua desenhando a posição
+	// congelada, mas o aimbot não trava em alvo antigo — evita tiro que
+	// "acerta" e não conta dano.
+	if ( AimCfg.Enabled || g_Globals.Silent.Enabled || AimCfg.aimmagnect )
+	{
+		for ( size_t i = 0; i < snapshot.size( ); i++ )
+		{
+			const auto& p = snapshot [ i ];
+
+			if ( snapshotFresh && p.Distance >= 0 && p.Distance <= AimCfg.MaxDistance )
+			{
+				enemiesvisible = true;
+
+				// Visible check
+				if ( g_Globals.AimBot.VisibleCheck )
+				{
+					bool anyVisible = false;
+
+					uintptr_t aimAssist = ReadPtr( localPlayer + Offsets::Player::m_AimAssist );
+					if ( aimAssist != 0 )
+					{
+						uintptr_t targetInfo = ReadPtr( aimAssist + Offsets::AimAssistAutoLock::m_TargetHeuristic );
+						if ( targetInfo != 0 )
+							anyVisible = true;
+					}
+
+					uintptr_t aimAssistSighting = ReadPtr( localPlayer + Offsets::Player::m_AimAssistOnSighting );
+					if ( aimAssistSighting != 0 )
+					{
+						uintptr_t targetInfo = ReadPtr( aimAssistSighting + Offsets::AimAssistAutoLock::m_TargetHeuristic );
+						if ( targetInfo != 0 )
+							anyVisible = true;
+					}
+
+					if ( !anyVisible )
+					{
+						enemiesvisible = false;
+						continue;
+					}
+				}
+
+				// Ignore bots and knocked
+				bool IsClientBot = false;
+				g_FreeFireMemory.Read<bool>( p.Entity + Offsets::Player::IsClientBot, IsClientBot );
+
+				if ( ( !AimCfg.IgnoreKnocked || !p.IsKnocked ) && ( !AimCfg.IgnoreBots || !IsClientBot ) )
+				{
+					float dx = p.HeadScreen.X - centerX;
+					float dy = p.HeadScreen.Y - centerY;
+					float crosshairDistSq = dx * dx + dy * dy;
+
+					if ( crosshairDistSq < fovSq && crosshairDistSq < ClosestDistSq )
+					{
+						ClosestDistSq = crosshairDistSq;
+						ClosestEntity = p.Entity;
+						ClosestHP = p.CurrentHealth;
+					}
+				}
+			}
+
+			// Alvo do silent: config propria (Silent.Fov e Silent.MaxDistance),
+			// sem VisibleCheck e sem IgnoreKnocked/IgnoreBots do aimbot.
+			if ( g_Globals.Silent.Enabled && snapshotFresh && p.Distance >= 0 && p.Distance <= g_Globals.Silent.MaxDistance )
+			{
+				float sdx = p.HeadScreen.X - centerX;
+				float sdy = p.HeadScreen.Y - centerY;
+				float silentCrosshairDistSq = sdx * sdx + sdy * sdy;
+
+				if ( silentCrosshairDistSq < silentFovSq && silentCrosshairDistSq < SilentDistSq )
+				{
+					SilentDistSq = silentCrosshairDistSq;
+					SilentClosestEntity = p.Entity;
+				}
+			}
+		}
+	}
+
 	// Partida ativa (localPlayer + view matrix validos): desenha o snapshot
 	// SEMPRE, mesmo quando a leitura de entidades engasga por segundos — as
 	// posicoes de mundo congeladas sao reprojetadas com a camera ao vivo e o
@@ -1037,6 +1128,10 @@ void Data::Draw( int width, int height, bool N32, bool V31 )
 		const auto& p = snapshot [ i ];
 
 		if ( ESP.RenderDistance > 0 && p.Distance > ESP.RenderDistance ) continue;
+
+		// Master "ESP Player": so controla o desenho. Aimbot/silent ja
+		// selecionaram alvo no bloco acima e continuam funcionando.
+		if ( !ESP.Enabled ) continue;
 
 		DrawEspEntityOverlay( p, DL, ESP, ViewMatrix, N32, V31, true );
 
@@ -1053,62 +1148,6 @@ void Data::Draw( int width, int height, bool N32, bool V31 )
 				closestHead2D = ImVec2( p.HeadScreen.X, p.HeadScreen.Y );
 			}
 		}
-
-		// ==================== Aimbot target selection ====================
-		// Só mira quando o snapshot é fresco (leitura do frame atual). Em falha
-		// transitória o ESP continua desenhando a posição congelada, mas o
-		// aimbot não trava em alvo antigo — evita tiro que "acerta" e não conta dano.
-
-		if ( snapshotFresh && p.Distance >= 0 && p.Distance <= AimCfg.MaxDistance )
-		{
-			enemiesvisible = true;
-
-			// Visible check
-			if ( g_Globals.AimBot.VisibleCheck )
-			{
-				bool anyVisible = false;
-
-				uintptr_t aimAssist = ReadPtr( localPlayer + Offsets::Player::m_AimAssist );
-				if ( aimAssist != 0 )
-				{
-					uintptr_t targetInfo = ReadPtr( aimAssist + Offsets::AimAssistAutoLock::m_TargetHeuristic );
-					if ( targetInfo != 0 )
-						anyVisible = true;
-				}
-
-				uintptr_t aimAssistSighting = ReadPtr( localPlayer + Offsets::Player::m_AimAssistOnSighting );
-				if ( aimAssistSighting != 0 )
-				{
-					uintptr_t targetInfo = ReadPtr( aimAssistSighting + Offsets::AimAssistAutoLock::m_TargetHeuristic );
-					if ( targetInfo != 0 )
-						anyVisible = true;
-				}
-
-				if ( !anyVisible )
-				{
-					enemiesvisible = false;
-					continue;
-				}
-			}
-
-			// Ignore bots and knocked
-			bool IsClientBot = false;
-			g_FreeFireMemory.Read<bool>( p.Entity + Offsets::Player::IsClientBot, IsClientBot );
-
-			if ( ( !AimCfg.IgnoreKnocked || !p.IsKnocked ) && ( !AimCfg.IgnoreBots || !IsClientBot ) )
-			{
-				float dx = p.HeadScreen.X - centerX;
-				float dy = p.HeadScreen.Y - centerY;
-				float crosshairDistSq = dx * dx + dy * dy;
-
-				if ( crosshairDistSq < fovSq && crosshairDistSq < ClosestDistSq )
-				{
-					ClosestDistSq = crosshairDistSq;
-					ClosestEntity = p.Entity;
-					ClosestHP = p.CurrentHealth;
-				}
-			}
-		}
 	} // end for entities
 
 	// ==================== Skeleton Cleanup ====================
@@ -1121,7 +1160,7 @@ void Data::Draw( int width, int height, bool N32, bool V31 )
 
 	// ==================== Watermark ====================
 
-	if ( ESP.Watermark )
+	if ( ESP.Enabled && ESP.Watermark )
 	{
 		ImGui::PushFont( Fonts::Verdana );
 
@@ -1145,7 +1184,7 @@ void Data::Draw( int width, int height, bool N32, bool V31 )
 
 	// ==================== Enemy text ====================
 
-	if ( ESP.Enemy )
+	if ( ESP.Enabled && ESP.Enemy )
 	{
 		if ( _lastEnemyCount != enemyCountFrame )
 		{
@@ -1373,9 +1412,11 @@ void Data::Draw( int width, int height, bool N32, bool V31 )
 	}
 
 	// ==================== Silent Aim Target ====================
+	// Usa o alvo PRÓPRIO do silent (SilentClosestEntity), selecionado com
+	// Silent.Fov/Silent.MaxDistance — independente do aimbot.
 
-	if ( ClosestEntity != 0 )
-		Silent::SetTarget( localPlayer, ClosestEntity );
+	if ( SilentClosestEntity != 0 )
+		Silent::SetTarget( localPlayer, SilentClosestEntity );
 	else
 		Silent::ClearTarget( );
 

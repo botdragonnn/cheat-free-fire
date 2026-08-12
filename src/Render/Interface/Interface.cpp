@@ -1011,6 +1011,9 @@ void Interface::RenderGui()
 					{
 						Custom::CustomChild(XorStr("General"), ImVec2(cardWidth, cardHeight));
 						{
+							// Master ESP: so controla o desenho dos players.
+							// Aimbot/silent continuam funcionando com ele desligado.
+							Custom::Checkbox(XorStr("Player"), &g_Globals.Visuals.ESP.Enabled);
 							Custom::Checkbox(XorStr("Watermark"), &g_Globals.Visuals.ESP.Watermark);
 							Custom::Checkbox(XorStr("Enemies"), &g_Globals.Visuals.ESP.Enemy);
 							Custom::Checkbox(XorStr("Weapons"), &g_Globals.Visuals.ESP.Weapon);

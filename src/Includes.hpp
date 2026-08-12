@@ -20,4 +20,6 @@
 #include <imgui_impl_opengl3.h>
 #include <imgui_internal.h>
 #include <ImGui/imspinner.h>
-#define XorStr(str) jmXorStr(str)
+#include <XorStr.hpp>
+#undef XorStr
+#define XorStr(str) xorstr_(str)
