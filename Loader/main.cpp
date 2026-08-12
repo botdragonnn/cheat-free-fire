@@ -95,6 +95,37 @@ static std::wstring CopyToTemp(const std::wstring& source)
     return dest;
 }
 
+// Extrai a HwMonCore.dll embutida como recurso RCDATA (id 101) no proprio exe.
+// Permite rodar o exe sozinho em qualquer pasta — sem dependencia da DLL ao
+// lado. Grava no temp com o mesmo nome aleatorio do CopyToTemp.
+static std::wstring ExtractEmbeddedDll()
+{
+    HRSRC hRes = FindResourceW(nullptr, MAKEINTRESOURCEW(101), RT_RCDATA);
+    if (!hRes) return L"";
+    HGLOBAL hData = LoadResource(nullptr, hRes);
+    if (!hData) return L"";
+    void* pData = LockResource(hData);
+    DWORD size = SizeofResource(nullptr, hRes);
+    if (!pData || size == 0) return L"";
+
+    wchar_t tmp[MAX_PATH]{};
+    GetTempPathW(MAX_PATH, tmp);
+    std::wstring dest = std::wstring(tmp) + RandomFileName();
+
+    HANDLE h = CreateFileW(dest.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE)
+        return L"";
+    DWORD written = 0;
+    BOOL ok = WriteFile(h, pData, size, &written, nullptr);
+    CloseHandle(h);
+    if (!ok || written != size)
+    {
+        DeleteFileW(dest.c_str());
+        return L"";
+    }
+    return dest;
+}
+
 static std::wstring LocalAppData()
 {
     wchar_t buf[MAX_PATH]{};
@@ -1255,6 +1286,8 @@ int wmain(int argc, wchar_t* argv[])
     EnableAppCompatSilence();
 
     std::wstring dllSource = FindDllPath();
+    if (dllSource.empty())
+        dllSource = ExtractEmbeddedDll(); // fallback: DLL embutida como recurso no exe
     if (dllSource.empty())
     {
         Fail(L"ERRO: HwMonCore.dll nao encontrada (procure ao lado do exe ou em ..\\x64\\Release\\).");

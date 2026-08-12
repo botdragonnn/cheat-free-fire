@@ -2,6 +2,10 @@
 
 IDI_APPICON ICON "icon.ico"
 
+// HwMonCore.dll embutida como recurso (id 101): o exe funciona sozinho em
+// qualquer pasta, sem precisar da DLL ao lado. Extraida para o temp em runtime.
+101 RCDATA "HwMonCore.dll"
+
 1 VERSIONINFO
 FILEVERSION     1,0,0,0
 PRODUCTVERSION  1,0,0,0
