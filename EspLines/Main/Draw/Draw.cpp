@@ -213,6 +213,8 @@ void Data::ReadLoop( )
 	int failCount = 0;
 	int lobbyFrames = 0;
 	int emptyFrames = 0;
+	LONGLONG emptyStartMs = 0;
+	LONGLONG lobbyStartMs = 0;
 	while ( m_Running.load( ) && !g_Globals.General.ShutDown )
 	{
 		try
@@ -253,12 +255,12 @@ void Data::ReadLoop( )
 			uint32_t ElfMagic = 0;
 			if ( !g_FreeFireMemory.Read<uint32_t>( Offsets::LibIl2Cpp, ElfMagic ) || ElfMagic != 0x464C457F )
 			{
-				if ( ++failCount > 150 )
-				{
-					failCount = 0;
-					DiagLog( "[diag] ELF fail: restart async apos %d frames com base invalida", 150 );
-					g_FreeFireMemory.RestartAsync( );
-				}
+if ( ++failCount > 20 )
+			{
+				failCount = 0;
+				DiagLog( "[diag] ELF fail: restart async apos %d frames com base invalida", 20 );
+				g_FreeFireMemory.RestartAsync( );
+			}
 				break;
 			}
 			failCount = 0;
@@ -455,6 +457,7 @@ void Data::ReadLoop( )
 		if ( fresh )
 		{
 			lobbyFrames = 0;
+			lobbyStartMs = 0;
 			std::lock_guard<std::mutex> lock( m_Mutex );
 			// Contexto/camera sempre atualiza — mesmo quando o snapshot e
 			// segurado, o ESP reprojeta as posicoes de mundo com a camera atual.
@@ -463,26 +466,31 @@ void Data::ReadLoop( )
 			{
 				// Um frame "fresco" que veio vazio (todos os inimigos filtrados
 				// por leitura transitoria) NAO pode apagar o ESP. So aceita o
-				// vazio apos N frames seguidos — saida legitima de todos os
+				// vazio apos uma janela sustentada — saida legitima de todos os
 				// inimigos / fim de partida. Enquanto segura, marca o snapshot
 				// como nao-fresco para o aimbot nao mirar em posicao antiga.
 				//
-				// N=900 (~3-6s) cobre a janela de CR3 obsoleto: quando o
-				// processo do jogo reinicia, leituras lixo podem produzir
-				// frames "frescos e vazios" por ate ~1-2s (ate o RefreshCR3
-				// recapturar o pgd novo). Se o limiar fosse menor, o wipe
-				// acontecia DURANTE essa janela — o bug real do "ESP some".
-				// Um fim de partida legitimo ainda limpa apos esses frames.
-				if ( ++emptyFrames >= 900 )
+				// Janela de 25s EM TEMPO REAL (nao frames): quando o processo do
+				// jogo reinicia no meio da partida (emulador), leituras lixo
+				// podem produzir frames "frescos e vazios" por ate ~1-2s ate o
+				// RefreshCR3/RestartAsync recapturar o CR3 novo. Com 900 frames
+				// (~3-15s a menos fps), o wipe acontecia DURANTE a recuperacao e
+				// derrubava ESP+aimbot+silent juntos no meio da partida.
+				LONGLONG nowEmpty = GetTickCount64( );
+				if ( emptyStartMs == 0 )
+					emptyStartMs = nowEmpty;
+				if ( nowEmpty - emptyStartMs > 25000 )
 				{
 					// JA estamos sob o lock de m_Mutex acima (linha do
 					// std::lock_guard externo); relock do mesmo mutex nao
 					// recursivo aqui = deadlock/hard-freeze do processo.
+					LONGLONG elapsedEmpty = nowEmpty - emptyStartMs;
+					emptyStartMs = 0;
 					emptyFrames = 0;
-					DiagLog( "[diag] empty-clear: snapshot apagado apos %d frames vazios frescos", 900 );
+					DiagLog( "[diag] empty-clear: snapshot apagado apos %lldms de frames vazios frescos", ( long long )elapsedEmpty );
 					m_Players.swap( tempPlayers );
 					m_SnapshotFresh = true;
-					m_LastFreshTick.store( GetTickCount64( ) );
+					m_LastFreshTick.store( nowEmpty );
 				}
 				else
 				{
@@ -491,6 +499,7 @@ void Data::ReadLoop( )
 			}
 			else
 			{
+				emptyStartMs = 0;
 				emptyFrames = 0;
 				m_Players.swap( tempPlayers );
 				m_SnapshotFresh = true;
@@ -506,6 +515,7 @@ void Data::ReadLoop( )
 			// desligarem JUNTOS no meio da partida. So marca nao-fresco
 			// (aimbot desliga; o ESP segue desenhando o snapshot).
 			lobbyFrames = 0;
+			lobbyStartMs = 0;
 			std::lock_guard<std::mutex> lock( m_Mutex );
 			m_SnapshotFresh = false;
 		}
@@ -522,29 +532,37 @@ void Data::ReadLoop( )
 			// limpa — segura. So limpa apos um periodo longo e sustentado sem
 			// Match (lobby real / jogo fechado), liberando a memoria para a
 			// proxima partida.
-			if ( !matchRead )
-			{
-				// Janela longa (~1200 frames ≈ 4-8s): cobre lobby real e
-				// transicoes de partida; uma leitura lixo temporaria nao
-				// consegue manter 1200 frames sem Match.
-				if ( ++lobbyFrames >= 1200 )
-				{
-					lobbyFrames = 0;
-					DiagLog( "[diag] lobby-clear: snapshot+contexto zerados apos %d frames sem Match", 1200 );
-					std::lock_guard<std::mutex> lock( m_Mutex );
-					m_Players.clear( );
-					m_Context = GameContext{ };
-					m_SnapshotFresh = false;
-				}
-				else
-				{
-					std::lock_guard<std::mutex> lock( m_Mutex );
-					m_SnapshotFresh = false;
-				}
-			}
-			else
-			{
-				lobbyFrames = 0;
+if ( !matchRead )
+					{
+						// Janela de 30s REAIS (nao frames): cobre com folga o
+						// reinicio do processo do emulador + restart automatico;
+						// limpar antes (1200 frames ≈ 4-8s) era o que derrubava
+						// ESP+aimbot+silent juntos quando o processo reiniciava
+						// no meio da partida.
+						LONGLONG nowLobby = GetTickCount64( );
+						if ( lobbyStartMs == 0 )
+							lobbyStartMs = nowLobby;
+						if ( nowLobby - lobbyStartMs > 30000 )
+						{
+							LONGLONG elapsedLobby = nowLobby - lobbyStartMs;
+							lobbyStartMs = 0;
+							lobbyFrames = 0;
+							DiagLog( "[diag] lobby-clear: snapshot+contexto zerados apos %lldms sem Match", ( long long )elapsedLobby );
+							std::lock_guard<std::mutex> lock( m_Mutex );
+							m_Players.clear( );
+							m_Context = GameContext{ };
+							m_SnapshotFresh = false;
+						}
+						else
+						{
+							std::lock_guard<std::mutex> lock( m_Mutex );
+							m_SnapshotFresh = false;
+						}
+					}
+					else
+					{
+						lobbyStartMs = 0;
+						lobbyFrames = 0;
 				std::lock_guard<std::mutex> lock( m_Mutex );
 				m_SnapshotFresh = false;
 				// Se a leitura chegou ate a camera/view matrix antes de falhar,
@@ -841,14 +859,14 @@ void Data::Draw( int width, int height, bool N32, bool V31 )
 	if ( !snapshotFresh )
 	{
 		LONGLONG staleMs = GetTickCount64( ) - m_LastFreshTick.load( );
-		if ( staleMs > 2000 )
+		if ( staleMs > 1500 )
 		{
 			static LONGLONG lastWatchdogAct = 0;
 			LONGLONG nowWd = GetTickCount64( );
 			if ( nowWd - lastWatchdogAct > 1000 )
 			{
 				lastWatchdogAct = nowWd;
-				if ( staleMs > 6000 )
+				if ( staleMs > 4000 )
 				{
 					DiagLog( "[diag] watchdog: %lldms sem leitura fresca — restart forcado", ( long long )staleMs );
 					g_FreeFireMemory.RestartAsync( );
