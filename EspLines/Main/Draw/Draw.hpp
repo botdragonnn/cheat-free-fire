@@ -62,7 +62,7 @@ class Data
 
 	static void DrawBox( float x, float y, float w, float h, ImColor color, ImColor fillColor, float thickness, int Type );
 	static void DrawWeapon( int WeaponID, bool IsKnocked, Vector3 HeadPos, float Height );
-	static void DrawHealthBar( short CurrentHealth, short MaxHealth, ImVec2 HeadPos, ImVec2 EntityPos, float Width, float Height, int Entity );
+	static void DrawHealthBar( short CurrentHealth, short MaxHealth, ImVec2 HeadPos, ImVec2 EntityPos, float Width, float Height, uintptr_t Entity );
 	static void DrawSnapLine( const Vector3& HeadPos, const Vector3& EntityPos, bool showName, bool healthTop, ImColor color, float thickness, int type );
 	static void SpinBot( uintptr_t LocalPlayer, bool N32 );
 

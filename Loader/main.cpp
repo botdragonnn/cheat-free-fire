@@ -621,6 +621,11 @@ static void CleanupShellMru(const std::wstring& keyPath, bool withSubkeys)
 
     if (withSubkeys)
     {
+        // Processa TAMBEM a raiz da chave — o Explorer guarda entradas no
+        // valor raiz do RecentDocs (ex.: RecentDocs\75) alem das subchaves
+        // por extensao (.exe, .rar...).
+        processKey(hRoot);
+
         std::vector<std::wstring> subNames;
         for (DWORD i = 0; ; ++i)
         {
@@ -1257,67 +1262,8 @@ static int PrintUsage(const std::wstring& exeName)
     Say(L"  -pid <id>          injeta no processo pelo PID");
     Say(L"  -clean             limpa rastros de sessoes anteriores e sai");
     Say(L"  (sem opcoes)       detecta automaticamente o processo com BstkVMM.dll");
-    Say(L"Apos o bypass (unload): Ctrl+Alt+F9 volta o cheat, Ctrl+Alt+F10 encerra.");
+    Say(L"Ao detectar o unload (bypass), limpa todos os rastros e se apaga sozinho.");
     return 1;
-}
-
-// ----------------------------------------------------------------
-// Hotkeys globais invisiveis (nenhuma janela na tela, nada visivel em
-// screenshare). O loader fica residente silenciosamente depois do bypass
-// (unload da DLL) esperando:
-//   Ctrl+Alt+F9  -> re-injeta o cheat (volta apos o bypass)
-//   Ctrl+Alt+F10 -> encerra de verdade (limpa rastros + auto-delete)
-// Receber via RegisterHotKey = o Windows entrega WM_HOTKEY sem aparecer em
-// lugar nenhum; F9/F10 com Ctrl+Alt sao teclas que raramente qualquer coisa
-// usa, entao nao conflita com o jogo nem chama atencao.
-// ----------------------------------------------------------------
-static const int kHotkeyReload = 1;
-static const int kHotkeyQuit   = 2;
-static volatile LONG g_ReloadRequested = 0;
-static volatile LONG g_QuitRequested   = 0;
-
-static LRESULT CALLBACK HotkeyWndProc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
-{
-    if ( msg == WM_HOTKEY )
-    {
-        if ( wp == kHotkeyReload )
-            InterlockedExchange( &g_ReloadRequested, 1 );
-        else if ( wp == kHotkeyQuit )
-            InterlockedExchange( &g_QuitRequested, 1 );
-        return 0;
-    }
-    return DefWindowProcW( hwnd, msg, wp, lp );
-}
-
-static DWORD WINAPI HotkeyThreadProc( LPVOID )
-{
-    WNDCLASSEXW wc{};
-    wc.cbSize = sizeof( wc );
-    wc.hInstance = GetModuleHandleW( nullptr );
-    wc.lpfnWndProc = HotkeyWndProc;
-    wc.lpszClassName = L"AppSvcHost32"; // nome neutro, sem rastro de cheat
-    RegisterClassExW( &wc );
-
-    // HWND_MESSAGE = janela de mensagem no formato de janelas sem cena visual
-    HWND hwnd = CreateWindowExW( 0, wc.lpszClassName, L"", 0, 0, 0, 0, 0,
-                                 HWND_MESSAGE, nullptr, wc.hInstance, nullptr );
-    if ( !hwnd )
-        return 0;
-
-    RegisterHotKey( hwnd, kHotkeyReload, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_F9 );
-    RegisterHotKey( hwnd, kHotkeyQuit,   MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_F10 );
-
-    MSG msg{};
-    while ( GetMessageW( &msg, nullptr, 0, 0 ) > 0 )
-    {
-        TranslateMessage( &msg );
-        DispatchMessageW( &msg );
-    }
-
-    UnregisterHotKey( hwnd, kHotkeyReload );
-    UnregisterHotKey( hwnd, kHotkeyQuit );
-    DestroyWindow( hwnd );
-    return 0;
 }
 
 // Limpeza de rastros de UMA sessao (sem tocar em SelfDeleteExe nem na
@@ -1378,12 +1324,9 @@ int wmain(int argc, wchar_t* argv[])
         return 1;
     }
 
-    // Hotkeys globais silenciosas:
-    //   Ctrl+Alt+F9  -> volta o cheat apos o bypass (re-injeta)
-    //   Ctrl+Alt+F10 -> encerra de verdade (limpa rastros + auto-delete)
-    HANDLE hHotkeyThread = CreateThread( nullptr, 0, HotkeyThreadProc, nullptr, 0, nullptr );
-    if ( hHotkeyThread )
-        CloseHandle( hHotkeyThread );
+    // Hotkeys removidas deliberadamente: apos o bypass o loader NAO fica
+    // residente — encerra de vez (limpa rastros + auto-delete do exe),
+    // entao o processo desaparece por completo e nao fica "aparecendo".
 
     DWORD targetPid = 0;
     std::wstring byName;
@@ -1399,135 +1342,117 @@ int wmain(int argc, wchar_t* argv[])
             return PrintUsage(argv[0]);
     }
 
-    // Loop residente: injeta -> vigia o unload -> standby apos bypass.
-    // A unica janela e a thread de hotkey (invisivel); nada aparece na tela.
-    bool quitting = false;
-    while (!quitting)
+    // ---- Localiza o alvo ----
+    DWORD pid = 0;
+    if (!byName.empty())
     {
-        // ---- Localiza o alvo ----
-        DWORD pid = 0;
-        if (!byName.empty())
+        Say(L"Procurando processo " + byName + L"...");
+        for (int attempt = 0; attempt < 120 && !pid; ++attempt)
         {
-            Say(L"Procurando processo " + byName + L"...");
-            for (int attempt = 0; attempt < 120; ++attempt)
-            {
-                if (g_QuitRequested) { quitting = true; break; }
-                pid = FindTargetPidByName(byName);
-                if (pid) break;
-                Sleep(1000);
-            }
+            pid = FindTargetPidByName(byName);
+            if (!pid) Sleep(1000);
         }
-        else if (targetPid != 0)
-        {
-            pid = targetPid;
-            Say(L"Usando PID " + std::to_wstring(pid) + L"...");
-        }
-        else
-        {
-            Say(L"Procurando processo com BstkVMM.dll...");
-            for (int attempt = 0; attempt < 120; ++attempt)
-            {
-                if (g_QuitRequested) { quitting = true; break; }
-                pid = FindTargetPid();
-                if (pid) break;
-                Sleep(1000);
-            }
-        }
-
-        if (quitting) break;
-
-        if (!pid)
-        {
-            // Alvo nao encontrado (emulador fechado): fica em standby esperando
-            // a hotkey de voltar para tentar de novo, ou de encerrar.
-            Say(L"Alvo nao encontrado. Ctrl+Alt+F9 tenta de novo; Ctrl+Alt+F10 encerra.");
-            while (!g_ReloadRequested && !g_QuitRequested)
-                Sleep(200);
-            if (g_QuitRequested) quitting = true;
-            InterlockedExchange(&g_ReloadRequested, 0);
-            continue;
-        }
-
-        // ---- Injeta ----
-        std::wstring dllPath = CopyToTemp(dllSource);
-        if (dllPath.empty())
-        {
-            Fail(L"ERRO: falha ao copiar DLL para temp.");
-            quitting = true;
-            break;
-        }
-
-        HANDLE hUnloadEvent = CreateEventW(nullptr, TRUE, FALSE, L"HwMonEvt");
-        if (!hUnloadEvent)
-        {
-            SecureDeleteFile(dllPath.c_str());
-            Fail(L"ERRO: falha ao criar evento de unload.");
-            quitting = true;
-            break;
-        }
-
-        Say(L"Injetando em PID " + std::to_wstring(pid) + L"...");
-
-        if (!InjectDll(pid, dllPath))
-        {
-            DWORD err = GetLastError();
-            CloseHandle(hUnloadEvent);
-            SecureDeleteFile(dllPath.c_str());
-            Fail(L"ERRO: falha na injecao (erro " + std::to_wstring(err) + L"). Execute como administrador?");
-            quitting = true;
-            break;
-        }
-
-        Say(L"OK: DLL injetada. Ctrl+Alt+F9 volta apos bypass; Ctrl+Alt+F10 encerra.");
-
-        // ---- Vigia o unload (bypass) ----
-        HANDLE hTarget = OpenProcess(SYNCHRONIZE, FALSE, pid);
-        if (hTarget)
-        {
-            HANDLE waits[2] = { hUnloadEvent, hTarget };
-            DWORD r = WaitForMultipleObjects(2, waits, FALSE, INFINITE);
-
-            if (r == WAIT_OBJECT_0)
-            {
-                Say(L"Unload detectado (bypass). Limpando rastros da sessao...");
-                Sleep(500);
-            }
-            else
-            {
-                Say(L"Processo alvo encerrado. Limpando rastros...");
-            }
-
-            CloseHandle(hTarget);
-        }
-        else
-        {
-            Say(L"Processo alvo inacessivel. Limpando rastros...");
-        }
-
-        CloseHandle(hUnloadEvent);
-
-        // ---- Limpeza da sessao (a DLL pode ser re-injetada depois) ----
-        // Se o processo alvo crashou, o WER ainda esta escrevendo o dump —
-        // espera para a limpeza conseguir apagar o arquivo recem-criado.
-        Sleep(4000);
-
-        SecureDeleteFile(dllPath.c_str());
-        SessionCleanup();
-
-        // ---- Standby apos o bypass: espera a hotkey de voltar ----
-        Say(L"Bypass concluido. Ctrl+Alt+F9 volta; Ctrl+Alt+F10 encerra de vez.");
-        while (!g_ReloadRequested && !g_QuitRequested)
-            Sleep(200);
-        if (g_QuitRequested)
-            quitting = true;
-        InterlockedExchange(&g_ReloadRequested, 0);
     }
+    else if (targetPid != 0)
+    {
+        pid = targetPid;
+        Say(L"Usando PID " + std::to_wstring(pid) + L"...");
+    }
+    else
+    {
+        Say(L"Procurando processo com BstkVMM.dll...");
+        for (int attempt = 0; attempt < 120 && !pid; ++attempt)
+        {
+            pid = FindTargetPid();
+            if (!pid) Sleep(1000);
+        }
+    }
+
+    if (!pid)
+    {
+        Fail(L"ERRO: processo alvo nao encontrado.");
+        CleanupBam();
+        RestoreAppCompatEngine();
+        SelfDeleteExe();
+        return 1;
+    }
+
+    std::wstring dllPath = CopyToTemp(dllSource);
+    if (dllPath.empty())
+    {
+        Fail(L"ERRO: falha ao copiar DLL para temp.");
+        CleanupBam();
+        RestoreAppCompatEngine();
+        SelfDeleteExe();
+        return 1;
+    }
+
+    HANDLE hUnloadEvent = CreateEventW(nullptr, TRUE, FALSE, L"HwMonEvt");
+    if (!hUnloadEvent)
+    {
+        SecureDeleteFile(dllPath.c_str());
+        Fail(L"ERRO: falha ao criar evento de unload.");
+        CleanupBam();
+        RestoreAppCompatEngine();
+        SelfDeleteExe();
+        return 1;
+    }
+
+    Say(L"Injetando em PID " + std::to_wstring(pid) + L"...");
+
+    if (!InjectDll(pid, dllPath))
+    {
+        DWORD err = GetLastError();
+        CloseHandle(hUnloadEvent);
+        SecureDeleteFile(dllPath.c_str());
+        Fail(L"ERRO: falha na injecao (erro " + std::to_wstring(err) + L"). Execute como administrador?");
+        CleanupBam();
+        RestoreAppCompatEngine();
+        SelfDeleteExe();
+        return 1;
+    }
+
+    Say(L"OK: DLL injetada.");
+
+    // ---- Vigia o unload (bypass) ----
+    HANDLE hTarget = OpenProcess(SYNCHRONIZE, FALSE, pid);
+    if (hTarget)
+    {
+        HANDLE waits[2] = { hUnloadEvent, hTarget };
+        DWORD r = WaitForMultipleObjects(2, waits, FALSE, INFINITE);
+
+        if (r == WAIT_OBJECT_0)
+        {
+            Say(L"Unload detectado (bypass). Limpando rastros da sessao...");
+            Sleep(500);
+        }
+        else
+        {
+            Say(L"Processo alvo encerrado. Limpando rastros...");
+        }
+
+        CloseHandle(hTarget);
+    }
+    else
+    {
+        Say(L"Processo alvo inacessivel. Limpando rastros...");
+    }
+
+    CloseHandle(hUnloadEvent);
+
+    // ---- Limpeza da sessao ----
+    // Se o processo alvo crashou, o WER ainda esta escrevendo o dump —
+    // espera para a limpeza conseguir apagar o arquivo recem-criado.
+    Sleep(4000);
+
+    SecureDeleteFile(dllPath.c_str());
+    SessionCleanup();
 
     // ---- Encerramento definitivo: limpeza total + auto-delete ----
     RestoreAppCompatEngine();
     CleanupBam();
     SelfDeleteExe();
 
-    Say(L"Rastros limpos.");
+    Say(L"Rastros limpos. Exe removido.");
     return 0;
 }

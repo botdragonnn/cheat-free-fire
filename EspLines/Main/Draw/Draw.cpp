@@ -132,7 +132,7 @@ static void DrawEspEntityOverlay( const PlayerData& p, ImDrawList* DL, const str
 	// --- HealthBar ---
 	if ( ESP.HealthBar )
 	{
-		Data::DrawHealthBar( p.CurrentHealth, p.MaxHealth, ImVec2( headScreen.X, headScreen.Y ), ImVec2( feetScreen.X, feetScreen.Y ), Width, Height, ( int )( uintptr_t )p.Entity );
+		Data::DrawHealthBar( p.CurrentHealth, p.MaxHealth, ImVec2( headScreen.X, headScreen.Y ), ImVec2( feetScreen.X, feetScreen.Y ), Width, Height, ( uintptr_t )p.Entity );
 	}
 
 	// --- Weapon ---
@@ -150,7 +150,7 @@ static void DrawEspEntityOverlay( const PlayerData& p, ImDrawList* DL, const str
 
 		ImGui::PushFont( Fonts::Verdana );
 		ImColor Color = p.IsKnocked ? ImColor( 1.f, 0.f, 0.f, 1.f ) : ImColor( ESP.DistanceColor [ 0 ], ESP.DistanceColor [ 1 ], ESP.DistanceColor [ 2 ], ESP.DistanceColor [ 3 ] );
-		ImVec2 sz = ImGui::CalcTextSize( distanceText );
+		ImVec2 sz = Utils::CalcTextSize( Fonts::Verdana, ESP.TextSize, distanceText );
 		DL->AddText( Fonts::Verdana, ESP.TextSize, ImVec2( headScreen.X - sz.x * 0.5f, feetScreen.Y + 5 ), Color, distanceText );
 		ImGui::PopFont( );
 	}
@@ -1847,7 +1847,7 @@ void Data::DrawWeapon( int WeaponID, bool IsKnocked, Vector3 HeadPos, float Heig
 		if ( !icon.empty( ) )
 		{
 			ImGui::PushFont( Fonts::IconWeapon );
-			iconSz = ImGui::CalcTextSize( icon.c_str( ) );
+			iconSz = Utils::CalcTextSize( Fonts::IconWeapon, g_Globals.Visuals.ESP.TextSize, icon.c_str( ) );
 			ImGui::PopFont( );
 		}
 	}
@@ -1857,7 +1857,7 @@ void Data::DrawWeapon( int WeaponID, bool IsKnocked, Vector3 HeadPos, float Heig
 		if ( !name.empty( ) )
 		{
 			ImGui::PushFont( Fonts::InterRegular );
-			textSz = ImGui::CalcTextSize( name.c_str( ) );
+			textSz = Utils::CalcTextSize( Fonts::InterRegular, g_Globals.Visuals.ESP.TextSize, name.c_str( ) );
 			ImGui::PopFont( );
 		}
 	}
@@ -1878,7 +1878,7 @@ void Data::DrawWeapon( int WeaponID, bool IsKnocked, Vector3 HeadPos, float Heig
 		if ( !name.empty( ) )
 		{
 			ImGui::PushFont( Fonts::Verdana );
-			float yName = ( Style == 1 ) ? ( feetY + 20.0f ) : ( feetY + 33.0f );
+			float yName = feetY + 20.0f;
 			DrawList->AddText( Fonts::Verdana, g_Globals.Visuals.ESP.TextSize,
 				ImVec2( centerX - textSz.x * 0.5f, yName ), Color, name.c_str( ) );
 			ImGui::PopFont( );
@@ -1886,11 +1886,11 @@ void Data::DrawWeapon( int WeaponID, bool IsKnocked, Vector3 HeadPos, float Heig
 	}
 }
 
-void Data::DrawHealthBar( short CurrentHealth, short MaxHealth, ImVec2 HeadPos, ImVec2 EntityPos, float Width, float Height, int Entity )
+void Data::DrawHealthBar( short CurrentHealth, short MaxHealth, ImVec2 HeadPos, ImVec2 EntityPos, float Width, float Height, uintptr_t Entity )
 {
 	struct HealthCacheEntry
 	{
-		int Entity;
+		uintptr_t Entity;
 		float SmoothedHealth;
 	};
 
