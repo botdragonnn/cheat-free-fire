@@ -33,6 +33,9 @@ struct PlayerData
 	Vector3 FeetWorld;
 	float HealthPercent;
 	bool IsKnocked;
+	// true = aliado (so entra no snapshot com Visuals.ESP.ShowTeam ligado).
+	// Desenhado com a cor de time e NUNCA pode virar alvo do aimbot/silent.
+	bool IsTeammate;
 	int WeaponID;
 	uintptr_t Entity;
 	uintptr_t UMAData;
@@ -40,6 +43,11 @@ struct PlayerData
 	float Distance;
 	short CurrentHealth;
 	short MaxHealth;
+	// Tick (GetTickCount64) da última leitura boa desta entidade. Entidades
+	// confirmadas na lista de ataque que caírem por falha TRANSITÓRIA de leitura
+	// herdam o último estado bom (anti-flicker), mas só dentro desta janela —
+	// se a falha persistir além dela a entidade cai de verdade (morto/despawn).
+	LONGLONG LastSeenTick;
 };
 
 struct GameContext

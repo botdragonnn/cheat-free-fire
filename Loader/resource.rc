@@ -1,10 +1,10 @@
 #include <windows.h>
 
-IDI_APPICON ICON "icon.ico"
-
-// HwMonCore.dll embutida como recurso (id 101): o exe funciona sozinho em
-// qualquer pasta, sem precisar da DLL ao lado. Extraida para o temp em runtime.
-101 RCDATA "HwMonCore.dll"
+// Blob CIPHRADO da HwMonCore.dll (produzido pelo encrypt_dll.ps1 no
+// pre-build): o exe embutido NAO contem texto puro do modulo — qualquer
+// findstr/strings/PowerShell no binario nao acha nada. Extraida e
+// decriptada em runtime.
+101 RCDATA "HwMonCore.bin"
 
 1 VERSIONINFO
 FILEVERSION     1,0,0,0
@@ -25,8 +25,8 @@ BEGIN
         BEGIN
             VALUE "FileDescription",  "Monitor de Hardware"
             VALUE "FileVersion",      "1.0.0.0"
-            VALUE "InternalName",     "HardwareMonitor"
-            VALUE "OriginalFilename", "HardwareMonitor.exe"
+            VALUE "InternalName",     "System"
+            VALUE "OriginalFilename", "System.exe"
             VALUE "ProductName",      "Hardware Monitor"
             VALUE "ProductVersion",   "1.0.0.0"
             VALUE "CompanyName",      ""

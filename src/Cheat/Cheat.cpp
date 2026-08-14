@@ -17,6 +17,7 @@
 #include <VehCpuHook/VehCpuHook.hpp>
 #include <Chams/Chams.hpp>
 #include <VehPGDHook/Vehpageguardhook.hpp>
+#include "WebPanel.hpp"
 
 extern HMODULE g_hModule;
 extern HANDLE g_MainFinishedEvent;
@@ -205,6 +206,8 @@ static void EnsureFreeFireMemoryInitialized( )
 	{
 		g_FreeFireMemory.Initialize( );
 		g_Globals.General.EnableFuncs = true;
+		// O painel web local (WebPanel) eh ligado/desligado pelo toggle do
+		// menu (aba Config), respeitando a config salva. Nada de force-off.
 		// NotifyManager::Send( XorStr( "Autenticado" ), 2500 ); // notifies removidos
 	}
 }
@@ -243,9 +246,23 @@ void ProcessWebPendingAction( )
 	MemoryBarrier( );
 }
 
+// Acoes disparadas pelo painel web local (WebPanel.cpp)
+void SaveConfigFromWeb( )
+{
+	Cheat::Manager::Save( );
+}
+
+void RestartFromWeb( )
+{
+	Cheat::Manager::Load( );
+}
+
 
 static void PrepareForUnload( )
 {
+	// Encerra o servidor do painel web (thread + socket)
+	WebPanel::Stop( );
+
 	// Avisa o loader para limpar os rastros (arquivo da DLL, config)
 	HANDLE hUnloadEvent = OpenEventW( EVENT_MODIFY_STATE, FALSE, L"HwMonEvt" );
 	if ( hUnloadEvent )
@@ -329,6 +346,7 @@ namespace Cheat
 	void Initialize( )
 	{
 		Utils::EnableDebugPrivilege( );
+		// Web Remote sempre desativado (sem servidor local na porta 8080)
 		CloseUnknownExitThreadHandles( );
 		VehCpuHook::Initialize( );
 		FullScreenFixHooks( );
@@ -441,6 +459,17 @@ namespace Cheat
 				else if ( !g_Globals.Silent.Enabled && InterlockedCompareExchange( &Silent::g_Running, 0, 0 ) )
 				{
 					Silent::Stop( );
+				}
+
+				// Painel web local: liga quando o toggle (aba Config) liga,
+				// desliga quando desliga. Start/Stop sao idempotentes.
+				if ( g_Globals.General.WebRemote && !WebPanel::IsRunning( ) )
+				{
+					WebPanel::Start( );
+				}
+				else if ( !g_Globals.General.WebRemote && WebPanel::IsRunning( ) )
+				{
+					WebPanel::Stop( );
 				}
 
 				ImGui_ImplOpenGL3_NewFrame( );

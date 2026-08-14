@@ -66,6 +66,7 @@ namespace Cheat {
                 wFloat4(ofs, "WatermarkColor", g_Globals.Visuals.ESP.WatermarkColor);
                 wBool(ofs, "Enemy", g_Globals.Visuals.ESP.Enemy);
                 wFloat4(ofs, "EnemyColor", g_Globals.Visuals.ESP.EnemyColor);
+                wFloat4(ofs, "TeamColor", g_Globals.Visuals.ESP.TeamColor);
                 wBool(ofs, "Weapon", g_Globals.Visuals.ESP.Weapon);
                 wBool(ofs, "ShowIcons", g_Globals.Visuals.ESP.ShowIcons);
                 wInt(ofs, "WeaponStyle", g_Globals.Visuals.ESP.WeaponStyle);
@@ -132,12 +133,13 @@ namespace Cheat {
                 wBool(ofs, "NoFireDelay", g_Globals.Misc.Exploits.LocalPlayer.FireDelay);
                 ofs << "\n";
 
-                // ---------- [General] ----------
-                ofs << "[General]\n";
-                wInt(ofs, "MenuKey", g_Globals.General.MenuKey);
-                wInt(ofs, "ThreadDelay", g_Globals.General.ThreadDelay);
-                wBool(ofs, "CaptureBypass", g_Globals.General.CaptureBypass);
-                ofs << "\n";
+// ---------- [General] ----------
+            ofs << "[General]\n";
+            wInt(ofs, "MenuKey", g_Globals.General.MenuKey);
+            wInt(ofs, "ThreadDelay", g_Globals.General.ThreadDelay);
+            wBool(ofs, "CaptureBypass", g_Globals.General.CaptureBypass);
+            wBool(ofs, "WebRemote", g_Globals.General.WebRemote);
+            ofs << "\n";
 
                 return true;
             }
@@ -206,6 +208,7 @@ namespace Cheat {
             gF4("Visuals.ESP", "WatermarkColor", g_Globals.Visuals.ESP.WatermarkColor);
             gBool("Visuals.ESP", "Enemy", g_Globals.Visuals.ESP.Enemy);
             gF4("Visuals.ESP", "EnemyColor", g_Globals.Visuals.ESP.EnemyColor);
+            gF4("Visuals.ESP", "TeamColor", g_Globals.Visuals.ESP.TeamColor);
             gBool("Visuals.ESP", "Weapon", g_Globals.Visuals.ESP.Weapon);
             gBool("Visuals.ESP", "ShowIcons", g_Globals.Visuals.ESP.ShowIcons);
             gInt("Visuals.ESP", "WeaponStyle", g_Globals.Visuals.ESP.WeaponStyle);
@@ -267,6 +270,7 @@ namespace Cheat {
             gInt("General", "MenuKey", g_Globals.General.MenuKey);
             gInt("General", "ThreadDelay", g_Globals.General.ThreadDelay);
             gBool("General", "CaptureBypass", g_Globals.General.CaptureBypass);
+            gBool("General", "WebRemote", g_Globals.General.WebRemote);
 
 
             return true;

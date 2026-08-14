@@ -13,10 +13,10 @@ public:
     };
 
     static void Init();
-    static std::string GetGunName(short gunId);
-    static std::string GetGunIcon(short gunId);
+    static std::string GetGunName(int gunId);
+    static std::string GetGunIcon(int gunId);
     static std::string GetBaseName(const std::string& fullName);
-    static bool HasIcon(short gunId);
+    static bool HasIcon(int gunId);
 
 private:
     static std::vector<GunInfo> GunData;

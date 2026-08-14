@@ -3,6 +3,8 @@
 #include <Main/Memory/Memory.hpp>
 #include <Cheat/saveconfig.cpp>
 #include <Cheat/SharedMemory.h>
+#include <Cheat/WebPanel.hpp>
+#include <shellapi.h>
 #include <cmath>
 #include <XorStr.hpp>
 #include <ext/KeyAuth/KeyAuth.hpp>
@@ -1016,6 +1018,7 @@ void Interface::RenderGui()
 							Custom::Checkbox(XorStr("Player"), &g_Globals.Visuals.ESP.Enabled);
 							Custom::Checkbox(XorStr("Watermark"), &g_Globals.Visuals.ESP.Watermark);
 							Custom::Checkbox(XorStr("Enemies"), &g_Globals.Visuals.ESP.Enemy);
+							Custom::Checkbox(XorStr("Team"), &g_Globals.Visuals.ESP.ShowTeam);
 							Custom::Checkbox(XorStr("Weapons"), &g_Globals.Visuals.ESP.Weapon);
 							if (g_Globals.Visuals.ESP.Weapon && g_Globals.Visuals.ESP.WeaponStyle == 0)
 								g_Globals.Visuals.ESP.WeaponStyle = 1;
@@ -1054,11 +1057,12 @@ void Interface::RenderGui()
 						ImGui::SetCursorPos(ImVec2(cardWidth + 10 + AnimaTab, 0));
 						Custom::CustomChild(XorStr("Colors"), ImVec2(cardWidth, cardHeight));
 						{
-							Custom::SliderInt(XorStr("Render Distance"), &g_Globals.Visuals.ESP.RenderDistance, 0, 140, "%dm");
+							Custom::SliderInt(XorStr("Render Distance"), &g_Globals.Visuals.ESP.RenderDistance, 0, 240, "%dm");
 							Custom::SliderFloat(XorStr("Text Size"), &g_Globals.Visuals.ESP.TextSize, 10.0f, 20.0f, "%.1f");
 							Custom::SliderFloat(XorStr("Thickness"), &g_Globals.Visuals.ESP.Thickness, 0.1f, 3.0f, "%.1f");
 							Custom::ColorEdit4(XorStr("Watermark"), g_Globals.Visuals.ESP.WatermarkColor);
 							Custom::ColorEdit4(XorStr("Enemy"), g_Globals.Visuals.ESP.EnemyColor);
+							Custom::ColorEdit4(XorStr("Team"), g_Globals.Visuals.ESP.TeamColor);
 							Custom::ColorEdit4(XorStr("Weapons"), g_Globals.Visuals.ESP.WeaponColor);
 							Custom::ColorEdit4(XorStr("SnapLines"), g_Globals.Visuals.ESP.SnapLinesColor);
 							Custom::ColorEdit4(XorStr("Box"), g_Globals.Visuals.ESP.BoxColor);
@@ -1085,6 +1089,30 @@ void Interface::RenderGui()
 							Custom::SliderInt(XorStr("Frame Rate"), &g_Globals.General.ThreadDelay, 30, 240, "%dFPS");
 
 							ImGui::Dummy(ImVec2(0, 8));
+
+							Custom::Checkbox(XorStr("Web Remote"), &g_Globals.General.WebRemote);
+							if (g_Globals.General.WebRemote)
+							{
+								std::string url = WebPanel::GetWebUrl();
+								ImGui::TextColored(ImVec4(0.35f, 0.9f, 0.45f, 1.0f), "%s", url.c_str());
+
+								if (Custom::Button(XorStr("Copy Link"), ImVec2(ImGui::GetWindowSize().x - 28, 30)))
+								{
+									if (OpenClipboard(nullptr))
+									{
+										EmptyClipboard();
+										HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, url.size() + 1);
+										if (mem)
+										{
+											memcpy(GlobalLock(mem), url.c_str(), url.size() + 1);
+											GlobalUnlock(mem);
+											SetClipboardData(CF_TEXT, mem);
+											NotifyManager::Send(XorStr("Link Copiado!"), 2500);
+										}
+										CloseClipboard();
+									}
+								}
+							}
 
 							if (Custom::Button(XorStr("Save Config"), ImVec2(ImGui::GetWindowSize().x - 28, 36)))
 							{

@@ -40,13 +40,14 @@ namespace Cheat {
 			{
 				bool Enabled = false;
 				bool ShowTeam = false;
-				int RenderDistance = 140;
+				int RenderDistance = 240;
 				float Thickness = 1.0f;
 				float TextSize = 15.0f;
 				bool Watermark = false;
 				float WatermarkColor[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
 				bool Enemy = false;
 				float EnemyColor[4] = { 1.0f, 0.0f, 0.0f, 1.0f };
+				float TeamColor[4] = { 0.2f, 0.6f, 1.0f, 1.0f };
 				bool Weapon = false;
 				bool ShowIcons = false;
 				int WeaponStyle = 1;
@@ -119,6 +120,7 @@ namespace Cheat {
 			int MenuKey = VK_INSERT;
 			int ThreadDelay = 240;
 			bool CaptureBypass = true;
+			bool WebRemote = false;
 			bool ShutDown = false;
 			bool NoAnogs = false;
 			bool N32 = false;

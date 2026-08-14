@@ -84,6 +84,14 @@ static void DrawEspEntityOverlay( const PlayerData& p, ImDrawList* DL, const str
 	if ( ESP.RenderDistance > 0 && p.Distance > ESP.RenderDistance )
 		return;
 
+	// Jogador morto NUNCA e desenhado — nem no caminho ao vivo nem no
+	// congelado. A captura ja filtra (CurrentHealth <= 0), mas o snapshot
+	// congelado segurava cadavers por ate 25s com a leitura engasgada
+	// ("ESP de morto" grudada na tela). O knocked (pose 8) tem HP > 0 e
+	// continua aparecendo em vermelho, como esperado.
+	if ( p.CurrentHealth <= 0 )
+		return;
+
 	Vector3 headScreen = p.HeadScreen;
 	Vector3 feetScreen = p.FeetScreen;
 
@@ -91,8 +99,23 @@ static void DrawEspEntityOverlay( const PlayerData& p, ImDrawList* DL, const str
 	{
 		headScreen = W2S::World2Screen( ViewMatrix, p.HeadWorld );
 		feetScreen = W2S::World2Screen( ViewMatrix, p.FeetWorld );
-		if ( headScreen.Z <= 0 || feetScreen.Z <= 0 )
-			return;
+
+		// So a cabeca atras da camera derruba o jogador. Pes atras (inimigo
+		// muito perto / camera baixa) NAO pode descartar a entidade inteira —
+		// era isso que fazia a snapline (e o resto da ESP) piscar e sumir com
+		// inimigo proximo. Usa a cabeca como fallback dos pes nesse caso.
+		if ( headScreen.Z <= 0 )
+		{
+			// Cabeca atras mas pes na frente = inimigo colado/abaixo da camera
+			// (melee). Usa os pes como referencial em vez de descartar o
+			// jogador inteiro — antes esse jogador sumia da ESP ate se afastar.
+			if ( feetScreen.Z > 0 )
+				headScreen = feetScreen;
+			else
+				return;
+		}
+		if ( feetScreen.Z <= 0 )
+			feetScreen = headScreen;
 	}
 	else if ( headScreen == Vector3::Zero( ) || feetScreen == Vector3::Zero( ) )
 	{
@@ -102,12 +125,26 @@ static void DrawEspEntityOverlay( const PlayerData& p, ImDrawList* DL, const str
 	}
 
 	const float Height = fabsf( feetScreen.Y - headScreen.Y );
-	const float Width = Height * 0.5f;
+	// Altura minima: com os pes atras da camera (fallback da cabeca) a altura
+	// colapsa a 0 e box/healthbar/weapon somem para aquele inimigo — parece
+	// que a ESP parou. Mantem um tamanho minimo visivel.
+	const float HeightSafe = ( Height < 2.0f ) ? 2.0f : Height;
+	const float Width = HeightSafe * 0.5f;
+
+	// Cor do elemento: aliado (cor de time) > caido (vermelho) > cor da opcao.
+	auto pickColor = [ &ESP, &p ] ( const float c [ 4 ] ) -> ImColor
+	{
+		if ( p.IsTeammate )
+			return ImColor( ESP.TeamColor [ 0 ], ESP.TeamColor [ 1 ], ESP.TeamColor [ 2 ], ESP.TeamColor [ 3 ] );
+		if ( p.IsKnocked )
+			return ImColor( 1.f, 0.f, 0.f, 1.f );
+		return ImColor( c [ 0 ], c [ 1 ], c [ 2 ], c [ 3 ] );
+	};
 
 	// --- Name ---
 	if ( ESP.ShowName )
 	{
-		ImColor nameColor = p.IsKnocked ? ImColor( 1.f, 0.f, 0.f, 1.f ) : ImColor( ESP.NameColor [ 0 ], ESP.NameColor [ 1 ], ESP.NameColor [ 2 ], ESP.NameColor [ 3 ] );
+		ImColor nameColor = pickColor( ESP.NameColor );
 		ImVec2 TextSize = Utils::CalcTextSize( Fonts::Gff, ESP.TextSize, p.Name.c_str( ) );
 		ImVec2 NamePos( ( headScreen.X - Width * 0.5f ) + ( Width * 0.5f ) - ( TextSize.x * 0.5f ), headScreen.Y - kNameOffset );
 		DL->AddText( Fonts::Gff, ESP.TextSize, NamePos, nameColor, p.Name.c_str( ) );
@@ -116,15 +153,15 @@ static void DrawEspEntityOverlay( const PlayerData& p, ImDrawList* DL, const str
 	// --- Box ---
 	if ( ESP.Box )
 	{
-		ImColor Color = p.IsKnocked ? ImColor( 1.f, 0.f, 0.f, 1.f ) : ImColor( ESP.BoxColor [ 0 ], ESP.BoxColor [ 1 ], ESP.BoxColor [ 2 ], ESP.BoxColor [ 3 ] );
-		ImColor ColorFilled = p.IsKnocked ? ImColor( 1.f, 0.f, 0.f, 1.f ) : ImColor( ESP.FilledBoxColor [ 0 ], ESP.FilledBoxColor [ 1 ], ESP.FilledBoxColor [ 2 ], ESP.FilledBoxColor [ 3 ] );
-		Data::DrawBox( headScreen.X - Width * 0.5f, headScreen.Y, Width, feetScreen.Y - headScreen.Y, Color, ColorFilled, ESP.Thickness, ESP.BoxStyle );
+		ImColor Color = pickColor( ESP.BoxColor );
+		ImColor ColorFilled = pickColor( ESP.FilledBoxColor );
+		Data::DrawBox( headScreen.X - Width * 0.5f, headScreen.Y, Width, HeightSafe, Color, ColorFilled, ESP.Thickness, ESP.BoxStyle );
 	}
 
 	// --- SnapLine ---
 	if ( ESP.SnapLines )
 	{
-		ImColor Color = p.IsKnocked ? ImColor( 1.f, 0.f, 0.f, 1.f ) : ImColor( ESP.SnapLinesColor [ 0 ], ESP.SnapLinesColor [ 1 ], ESP.SnapLinesColor [ 2 ], ESP.SnapLinesColor [ 3 ] );
+		ImColor Color = pickColor( ESP.SnapLinesColor );
 		const bool healthTop = ( ESP.HealthBarStyle == 3 );
 		Data::DrawSnapLine( headScreen, feetScreen, ESP.ShowName, healthTop, Color, ESP.Thickness, ESP.SnapLinesPos );
 	}
@@ -132,13 +169,13 @@ static void DrawEspEntityOverlay( const PlayerData& p, ImDrawList* DL, const str
 	// --- HealthBar ---
 	if ( ESP.HealthBar )
 	{
-		Data::DrawHealthBar( p.CurrentHealth, p.MaxHealth, ImVec2( headScreen.X, headScreen.Y ), ImVec2( feetScreen.X, feetScreen.Y ), Width, Height, ( uintptr_t )p.Entity );
+		Data::DrawHealthBar( p.CurrentHealth, p.MaxHealth, ImVec2( headScreen.X, headScreen.Y ), ImVec2( feetScreen.X, feetScreen.Y ), Width, HeightSafe, ( uintptr_t )p.Entity );
 	}
 
 	// --- Weapon ---
 	if ( ESP.Weapon )
 	{
-		Data::DrawWeapon( p.WeaponID, p.IsKnocked, headScreen, Height );
+		Data::DrawWeapon( p.WeaponID, p.IsKnocked, headScreen, HeightSafe );
 	}
 
 	// --- Distance ---
@@ -149,7 +186,7 @@ static void DrawEspEntityOverlay( const PlayerData& p, ImDrawList* DL, const str
 		snprintf( distanceText, sizeof( distanceText ), XorStr( "%dm" ), mRounded );
 
 		ImGui::PushFont( Fonts::Verdana );
-		ImColor Color = p.IsKnocked ? ImColor( 1.f, 0.f, 0.f, 1.f ) : ImColor( ESP.DistanceColor [ 0 ], ESP.DistanceColor [ 1 ], ESP.DistanceColor [ 2 ], ESP.DistanceColor [ 3 ] );
+		ImColor Color = pickColor( ESP.DistanceColor );
 		ImVec2 sz = Utils::CalcTextSize( Fonts::Verdana, ESP.TextSize, distanceText );
 		DL->AddText( Fonts::Verdana, ESP.TextSize, ImVec2( headScreen.X - sz.x * 0.5f, feetScreen.Y + 5 ), Color, distanceText );
 		ImGui::PopFont( );
@@ -221,6 +258,11 @@ void Data::ReadLoop( )
 		{
 		std::vector<PlayerData> tempPlayers;
 		GameContext tempCtx{ };
+		// Entidades confirmadas como inimigo no frame atual (na lista oficial
+		// e com classe conhecida). Servem de base para o carry-over: quem
+		// passou destes checks mas caiu por falha transitória NÃO sai do
+		// snapshot — herda o último estado bom da entidade (anti-flicker).
+		std::unordered_set<uintptr_t> seenThisFrame;
 
 		// fresh          = o frame inteiro (facade->partida->entidades) leu ok
 		// readMatchState = conseguiu ler o estado da partida
@@ -330,6 +372,7 @@ if ( ++failCount > 20 )
 			if ( dictCount <= 0 || dictCount > 200 ) break;
 
 			tempPlayers.reserve( dictCount );
+			seenThisFrame.reserve( dictCount );
 
 			for ( int i = 0; i < dictCount; i++ )
 			{
@@ -338,6 +381,8 @@ if ( ++failCount > 20 )
 
 				PlayerType type = Data::GetPlayerType( Entity, N32 );
 				if ( type == PLAYER_UNKNOWN ) continue;
+
+				seenThisFrame.insert( Entity );
 
 				uintptr_t m_AvatarManager = ReadPtr( Entity + Offsets::Player::m_AvatarManager );
 				if ( m_AvatarManager == 0 ) continue;
@@ -348,12 +393,17 @@ if ( ++failCount > 20 )
 				uintptr_t UMAData = ReadPtr( m_Avatar + Offsets::UMAAvatarBase::umaData );
 				if ( UMAData == 0 ) continue;
 
-				int TransformType = g_FreeFireMemory.Read<int>( Entity + Offsets::Player::m_TransformType );
-				bool IsVisible = g_FreeFireMemory.Read<bool>( m_Avatar + Offsets::UmaAvatarSimple::IsVisible );
-				if ( IsVisible == 0 && TransformType == 0 ) continue;
+				// Sem filtro de visibilidade do mesh: IsVisible=0 (mesh oculto
+				// em veiculo/animacao/revive/paraquedas) derrubava players
+				// legitimos da ESP — "alguns players nao aparecem". Todo player
+				// valido entra no snapshot; a visibilidade visual fica por
+				// conta do VisibleCheck do aimbot/silent, nao da ESP.
 
 				bool IsTeam = g_FreeFireMemory.Read<bool>( UMAData + Offsets::UMAData::isTeammate );
-				if ( IsTeam ) continue;
+				// "Mostrar time" (ESP.ShowTeam): aliados entram no snapshot
+				// marcados como IsTeammate — desenhados com cor de time e
+				// nunca viram alvo do aimbot/silent. Desligado = filtro antigo.
+				if ( IsTeam && !g_Globals.Visuals.ESP.ShowTeam ) continue;
 
 				uintptr_t m_PRIDataPoolPtr = ReadPtr( Entity + Offsets::ReplicationEntity::m_PRIDataPool );
 				if ( m_PRIDataPoolPtr == 0 ) continue;
@@ -380,9 +430,12 @@ if ( ++failCount > 20 )
 				float HealthPercent = ( float )CurrentHealth / ( float )MaxHealth;
 
 				uintptr_t WeaponPtr = ReadPtr( dataArrayPtr + Offsets::ReplicationEntity::WeaponPtr );
-				if ( WeaponPtr == 0 ) continue;
-
-				int WeaponID = g_FreeFireMemory.Read<int>( WeaponPtr + Offsets::ReplicationEntity::Value );
+				// Falha transitoria do ponteiro de arma NAO derruba o player da
+				// ESP (era um dos motivos de players sumirem): fica com
+				// WeaponID=-1 e a linha da arma apenas nao e desenhada.
+				int WeaponID = -1;
+				if ( WeaponPtr != 0 )
+					WeaponID = g_FreeFireMemory.Read<int>( WeaponPtr + Offsets::ReplicationEntity::Value );
 
 				// Name
 				std::string nameStr = "BOT";
@@ -431,7 +484,11 @@ if ( ++failCount > 20 )
 				// como fallback (congelado) e a reprojecao acontece no desenho.
 				Vector3 HeadPos = W2S::World2Screen( ViewMatrix, HeadWorld );
 				Vector3 EntityPos = W2S::World2Screen( ViewMatrix, FeetWorld );
-				bool projOk = ( HeadPos.Z > 0 && EntityPos.Z > 0 );
+				// Projecao so vale com tela real: no boot (antes do primeiro
+				// render) ScreenWidth/Height sao 0 e W2S devolve (0,0) — gravar
+				// isso no snapshot fazia os inimigos aparecerem amontoados no
+				// canto do caminho congelado.
+				bool projOk = ( ScreenWidth > 0 && ScreenHeight > 0 && HeadPos.Z > 0 && EntityPos.Z > 0 );
 
 				PlayerData pd;
 				pd.HeadScreen = projOk ? HeadPos : Vector3::Zero( );
@@ -440,12 +497,15 @@ if ( ++failCount > 20 )
 				pd.FeetWorld = FeetWorld;
 				pd.HealthPercent = HealthPercent;
 				pd.IsKnocked = IsKnocked;
+				pd.IsTeammate = IsTeam;
 				pd.WeaponID = WeaponID;
 				pd.Entity = Entity;
 				pd.UMAData = UMAData;
 				pd.Name = nameStr;
 				pd.Distance = Distancia;
 				pd.CurrentHealth = ( short )CurrentHealth;
+				pd.MaxHealth = ( short )MaxHealth;
+				pd.LastSeenTick = GetTickCount64( );
 				pd.MaxHealth = ( short )MaxHealth;
 				tempPlayers.push_back( pd );
 			}
@@ -458,6 +518,58 @@ if ( ++failCount > 20 )
 		{
 			lobbyFrames = 0;
 			lobbyStartMs = 0;
+
+			// ==== carry-over de entidades (anti-flicker) ====
+			// Mesma filosofia do cheat de referência (hyperX): a entidade fica
+			// presa pelo ponteiro e falha transitória NÃO derruba o ESP. Uma
+			// entidade que passou dos checks fundamentais deste frame (está na
+			// lista oficial e é inimiga) mas caiu no meio da leitura — cadeia
+			// de ponteiros com um frame de lixo, posição (0,0), weapon/health
+			// ptr falhando — herda o ÚLTIMO ESTADO BOM do snapshot: o ESP não
+			// pisca e o aimbot não perde o alvo por 1 frame ruim.
+			//
+			// A entidade SÓ cai de verdade quando:
+			//  - não aparece em seenThisFrame (saiu da lista de ataque:
+			//    despawnado/eliminado pelo jogo);
+			//  - a re-leitura de vida dá <= 0 (morreu — não ressuscita cadáver);
+			//  - passou da janela de validade (3s sem nenhuma leitura boa —
+			//    mesma política de expiração do snapshot congelado).
+			{
+				LONGLONG nowCarry = GetTickCount64( );
+				std::vector<PlayerData> carried;
+				carried.reserve( m_Players.size( ) / 2 );
+				std::lock_guard<std::mutex> lock( m_Mutex );
+				for ( const auto& prev : m_Players )
+				{
+					if ( nowCarry - prev.LastSeenTick > 3000 )
+						continue;
+					if ( seenThisFrame.find( prev.Entity ) == seenThisFrame.end( ) )
+						continue;
+					bool alreadyIn = false;
+					for ( const auto& np : tempPlayers )
+					{
+						if ( np.Entity == prev.Entity )
+						{
+							alreadyIn = true;
+							break;
+						}
+					}
+					if ( alreadyIn )
+						continue;
+					// Não ressuscita morto: re-lê a vida (mesma cadeia do loop).
+					// Se voltar <= 0 a entidade morreu e cai no próximo frame.
+					uintptr_t priPool = N32 ? g_FreeFireMemory.Read<uint32_t>( prev.Entity + Offsets::ReplicationEntity::m_PRIDataPool ) : g_FreeFireMemory.Read<uint64_t>( prev.Entity + Offsets::ReplicationEntity::m_PRIDataPool );
+					uintptr_t arrPtr = ( priPool != 0 ) ? ( N32 ? g_FreeFireMemory.Read<uint32_t>( priPool + Offsets::ReplicationEntity::m_Datas ) : g_FreeFireMemory.Read<uint64_t>( priPool + Offsets::ReplicationEntity::m_Datas ) ) : 0;
+					uintptr_t hPtr = ( arrPtr != 0 ) ? ( N32 ? g_FreeFireMemory.Read<uint32_t>( arrPtr + Offsets::ReplicationEntity::HealthCurrentPtr ) : g_FreeFireMemory.Read<uint64_t>( arrPtr + Offsets::ReplicationEntity::HealthCurrentPtr ) ) : 0;
+					int h = ( hPtr != 0 ) ? g_FreeFireMemory.Read<int>( hPtr + Offsets::ReplicationEntity::Value ) : -1;
+					if ( h <= 0 )
+						continue;
+					carried.push_back( prev );
+				}
+				for ( const auto& c : carried )
+					tempPlayers.push_back( c );
+			}
+
 			std::lock_guard<std::mutex> lock( m_Mutex );
 			// Contexto/camera sempre atualiza — mesmo quando o snapshot e
 			// segurado, o ESP reprojeta as posicoes de mundo com a camera atual.
@@ -635,13 +747,12 @@ void Data::Draw( int width, int height, bool N32, bool V31 )
 		// e desenhado (aim/silent nao dependem deste caminho).
 		if ( !g_Globals.Visuals.ESP.Enabled ) return;
 
-		// Snapshot sem leitura fresca ha mais de ~3s nao e desenhado: isso e
-		// transicao real de partida/loading, e o ESP volta sozinho quando a
-		// leitura renovar (mesmo comportamento do cheat de referencia, que
-		// limpa as entidades a cada frame). Sem isso, screens congeladas de
-		// uma partida antiga ficariam grudadas na tela.
-		if ( !m_SnapshotFresh && ( GetTickCount64( ) - m_LastFreshTick.load( ) ) > 3000 )
-			return;
+		// Snapshot velho NAO para o desenho: o snapshot congelado continua
+		// sendo exibido (reprojetado com a camera ao vivo, se houver) ate a
+		// leitura renovar — antes, >3s sem leitura fresca zerava a tela no
+		// meio da partida (engasgo do emulador/CR3) e o ESP so voltava quando
+		// a leitura voltava (ou nem voltava). A limpeza de verdade (partida
+		// encerrada) continua sendo feita pelo lobby-clear de 30s no ReadLoop.
 
 		const auto& ESPc = g_Globals.Visuals.ESP;
 		ImDrawList* DLc = ImGui::GetForegroundDrawList( );
@@ -1066,6 +1177,10 @@ void Data::Draw( int width, int height, bool N32, bool V31 )
 		{
 			const auto& p = snapshot [ i ];
 
+			// Aliado nunca vira alvo — ShowTeam so afeta o desenho da ESP,
+			// nunca a selecao de alvo do aimbot/silent/magnet.
+			if ( p.IsTeammate ) continue;
+
 			if ( snapshotFresh && p.Distance >= 0 && p.Distance <= AimCfg.MaxDistance )
 			{
 				enemiesvisible = true;
@@ -1151,10 +1266,27 @@ void Data::Draw( int width, int height, bool N32, bool V31 )
 		// selecionaram alvo no bloco acima e continuam funcionando.
 		if ( !ESP.Enabled ) continue;
 
-		DrawEspEntityOverlay( p, DL, ESP, ViewMatrix, N32, V31, true );
+		// Isolamento por entidade: uma entidade/skeleton com problema nunca
+		// pode abortar o resto do frame — que roda magnet, boneswap, o feed
+		// do silent e o rage abaixo. A ESP pula a entidade e segue; aimbot
+		// e silent ficam imunes a falha de desenho da ESP (e vice-versa).
+		try
+		{
+			DrawEspEntityOverlay( p, DL, ESP, ViewMatrix, N32, V31, true );
+		}
+		catch ( ... )
+		{
+			static LONGLONG lastSkipLog = 0;
+			LONGLONG nowSkip = GetTickCount64( );
+			if ( nowSkip - lastSkipLog > 5000 )
+			{
+				lastSkipLog = nowSkip;
+				DiagLog( "[diag] esp: entidade %zu pulada (excecao no desenho)", ( size_t )i );
+			}
+		}
 
-		// --- Enemy counter ---
-		if ( ESP.Enemy )
+		// --- Enemy counter (aliados de time nao contam) ---
+		if ( ESP.Enemy && !p.IsTeammate )
 		{
 			enemyCountFrame++;
 			float dx = p.HeadScreen.X - centerX;
@@ -1463,6 +1595,17 @@ void Data::Draw( int width, int height, bool N32, bool V31 )
 					s_AimFloodRunning = true;
 					std::thread( [ localPlayer, MainCamera, N32 ] ( )
 					{
+						// Qualquer saida (inclusive excecao) libera o flag do
+						// flood. Sem isso, uma excecao dentro da thread deixava
+						// s_AimFloodRunning preso em true e o rage nunca mais
+						// ativava na partida ("para do nada e nao volta").
+						struct FloodReset { bool* p; ~FloodReset( ) { *p = false; } } reset{ &s_AimFloodRunning };
+
+						int originalAimAssist = 0;
+						bool aimAssistModified = false;
+
+						try
+						{
 						auto ReadPtrT = [ N32 ] ( uintptr_t addr ) -> uintptr_t
 						{
 							return N32 ? g_FreeFireMemory.Read<uint32_t>( addr ) : g_FreeFireMemory.Read<uint64_t>( addr );
@@ -1480,9 +1623,6 @@ void Data::Draw( int width, int height, bool N32, bool V31 )
 							default: delayMs = 0; break;
 						}
 
-						int originalAimAssist = 0;
-						bool aimAssistModified = false;
-
 						if ( delayMs > 0 )
 							std::this_thread::sleep_for( std::chrono::milliseconds( delayMs ) );
 
@@ -1497,7 +1637,6 @@ void Data::Draw( int width, int height, bool N32, bool V31 )
 						{
 							if ( aimAssistModified )
 								g_FreeFireMemory.Write<int>( localPlayer + Offsets::Player::m_EAimAssit, originalAimAssist );
-							s_AimFloodRunning = false;
 							return;
 						}
 
@@ -1512,11 +1651,15 @@ void Data::Draw( int width, int height, bool N32, bool V31 )
 							if ( !( isStillShooting && isKeyStillPressed ) )
 								break;
 
-							if ( g_Globals.AimBot.IgnoreKnocked )
+							// Relê o HP do alvo SEMPRE (com ou sem IgnoreKnocked):
+							// se o alvo morreu no meio do flood, sai do loop e o
+							// próximo frame re-seleciona o novo alvo. Antes, com
+							// IgnoreKnocked desligado, o flood ficava preso no
+							// cadáver até soltar o botão — parecia travado.
+							int hp = 1;
+							uintptr_t fixedTarget = RageTarget;
+							if ( fixedTarget != 0 )
 							{
-								int hp = 1;
-								uintptr_t fixedTarget = RageTarget;
-
 								uintptr_t priPool = ReadPtrT( fixedTarget + Offsets::ReplicationEntity::m_PRIDataPool );
 								if ( priPool != 0 )
 								{
@@ -1534,7 +1677,7 @@ void Data::Draw( int width, int height, bool N32, bool V31 )
 									isKnocked = ( playerPose == 8 );
 								}
 
-								if ( hp <= 0 || isKnocked )
+								if ( hp <= 0 || ( g_Globals.AimBot.IgnoreKnocked && isKnocked ) )
 								{
 									// PraCima
 									if ( g_Globals.AimBot.PraCima && g_Globals.AimBot.PraCimaValor > 0.f && g_Globals.AimBot.PraCimaTempo > 0 )
@@ -1571,6 +1714,10 @@ void Data::Draw( int width, int height, bool N32, bool V31 )
 									break;
 								}
 							}
+							else
+							{
+								break;
+							}
 
 							Vector3 Head = Transform::GetHeadPosition( RageTarget, N32 );
 							Vector3 LocalCamera = ( MainCamera != 0 ) ? Transform::get_position_Injected( MainCamera, N32 ) : Vector3::Zero( );
@@ -1585,7 +1732,14 @@ void Data::Draw( int width, int height, bool N32, bool V31 )
 						if ( aimAssistModified )
 							g_FreeFireMemory.Write<int>( localPlayer + Offsets::Player::m_EAimAssit, originalAimAssist );
 
-						s_AimFloodRunning = false;
+						}
+						catch ( ... )
+						{
+							// Excecao na thread do rage: restaura o assist e sai.
+							// O FloodReset libera o flag — o rage volta a ativar.
+							if ( aimAssistModified )
+								g_FreeFireMemory.Write<int>( localPlayer + Offsets::Player::m_EAimAssit, originalAimAssist );
+						}
 
 					} ).detach( );
 				}
@@ -1820,6 +1974,14 @@ void Data::DrawWeapon( int WeaponID, bool IsKnocked, Vector3 HeadPos, float Heig
 	const int Style = g_Globals.Visuals.ESP.WeaponStyle;
 	if ( Style == 0 ) return;
 
+	// WeaponID < 0 = leitura de arma falhou (player continua na ESP, so
+	// a linha da arma e pulada).
+	if ( WeaponID < 0 ) return;
+
+	// "Icones de arma" (ShowIcons): desliga os icones sem desativar a arma
+	// inteira — estilo Icono/Both cai para Texto quando o toggle esta off.
+	bool drawIcons = g_Globals.Visuals.ESP.ShowIcons;
+
 	static bool namegun_inited = false;
 	if ( !namegun_inited )
 	{
@@ -1839,10 +2001,10 @@ void Data::DrawWeapon( int WeaponID, bool IsKnocked, Vector3 HeadPos, float Heig
 		: ImColor( g_Globals.Visuals.ESP.WeaponColor [ 0 ], g_Globals.Visuals.ESP.WeaponColor [ 1 ],
 			g_Globals.Visuals.ESP.WeaponColor [ 2 ], g_Globals.Visuals.ESP.WeaponColor [ 3 ] );
 
-	if ( Namegun::HasIcon( WeaponID ) ) icon = Namegun::GetGunIcon( WeaponID );
+	if ( Namegun::HasIcon( WeaponID ) && drawIcons ) icon = Namegun::GetGunIcon( WeaponID );
 	name = Namegun::GetGunName( WeaponID );
 
-	if ( Style == 2 || Style == 3 )
+	if ( ( Style == 2 || Style == 3 ) && drawIcons )
 	{
 		if ( !icon.empty( ) )
 		{
@@ -1852,7 +2014,10 @@ void Data::DrawWeapon( int WeaponID, bool IsKnocked, Vector3 HeadPos, float Heig
 		}
 	}
 
-	if ( Style == 1 || Style == 3 )
+	// Estilo "Icon" sem icones permitidos cai para texto (fallback)
+	const bool drawText = ( Style == 1 || Style == 3 || ( Style == 2 && !drawIcons ) );
+
+	if ( drawText )
 	{
 		if ( !name.empty( ) )
 		{
@@ -1862,7 +2027,7 @@ void Data::DrawWeapon( int WeaponID, bool IsKnocked, Vector3 HeadPos, float Heig
 		}
 	}
 
-	if ( Style == 2 || Style == 3 )
+	if ( ( Style == 2 || Style == 3 ) && drawIcons )
 	{
 		if ( !icon.empty( ) )
 		{
@@ -1873,7 +2038,7 @@ void Data::DrawWeapon( int WeaponID, bool IsKnocked, Vector3 HeadPos, float Heig
 		}
 	}
 
-	if ( Style == 1 || Style == 3 )
+	if ( drawText )
 	{
 		if ( !name.empty( ) )
 		{
@@ -2021,7 +2186,13 @@ void Data::DrawSnapLine( const Vector3& HeadPos, const Vector3& EntityPos, bool 
 		? ImVec2( ScreenWidth * 0.5f, ( float )ScreenHeight )
 		: ImVec2( ScreenWidth * 0.5f, ScreenHeight * 0.03f );
 
-	ImVec2 endPoint( targetX, ImClamp( targetY, 0.0f, ( float )ScreenHeight - 1.0f ) );
+	// Alvo fora dos limites da tela NAO pode fazer a linha sumir: clamped para
+	// a borda mais proxima, a snapline continua "pegando" (aponta a direcao)
+	// mesmo com o inimigo fora do enquadramento.
+	float targetXClamped = ImClamp( targetX, 0.0f, ( float )( ScreenWidth - 1 ) );
+	float targetYClamped = ImClamp( targetY, 0.0f, ( float )( ScreenHeight - 1 ) );
+
+	ImVec2 endPoint( targetXClamped, targetYClamped );
 	DrawList->AddLine( startPoint, endPoint, color, thickness );
 }
 

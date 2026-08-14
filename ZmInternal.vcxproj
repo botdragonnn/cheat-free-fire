@@ -67,7 +67,7 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>OPENGL32.LIB;GLFW3.LIB;WINHTTP.LIB;BCRYPT.LIB;RPCrt4.LIB;KERNEL32.LIB;USER32.LIB;GDI32.LIB;WINSPOOL.LIB;COMDLG32.LIB;ADVAPI32.LIB;SHELL32.LIB;OLE32.LIB;OLEAUT32.LIB;UUID.LIB;ODBC32.LIB;ODBCCP32.LIB;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>OPENGL32.LIB;GLFW3.LIB;WINHTTP.LIB;BCRYPT.LIB;RPCrt4.LIB;WS2_32.LIB;KERNEL32.LIB;USER32.LIB;GDI32.LIB;WINSPOOL.LIB;COMDLG32.LIB;ADVAPI32.LIB;SHELL32.LIB;OLE32.LIB;OLEAUT32.LIB;UUID.LIB;ODBC32.LIB;ODBCCP32.LIB;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>$(ProjectDir)ext\Dependencies\ImGui\libs\GLFW\lib;$(ProjectDir)ext\Dependencies\Freetype\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
@@ -94,13 +94,14 @@
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <LinkTimeCodeGeneration>UseLinkTimeCodeGeneration</LinkTimeCodeGeneration>
-      <AdditionalDependencies>OPENGL32.LIB;GLFW3.LIB;WINHTTP.LIB;BCRYPT.LIB;RPCrt4.LIB;KERNEL32.LIB;USER32.LIB;GDI32.LIB;WINSPOOL.LIB;COMDLG32.LIB;ADVAPI32.LIB;SHELL32.LIB;OLE32.LIB;OLEAUT32.LIB;UUID.LIB;ODBC32.LIB;ODBCCP32.LIB;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>OPENGL32.LIB;GLFW3.LIB;WINHTTP.LIB;BCRYPT.LIB;RPCrt4.LIB;WS2_32.LIB;KERNEL32.LIB;USER32.LIB;GDI32.LIB;WINSPOOL.LIB;COMDLG32.LIB;ADVAPI32.LIB;SHELL32.LIB;OLE32.LIB;OLEAUT32.LIB;UUID.LIB;ODBC32.LIB;ODBCCP32.LIB;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>$(ProjectDir)ext\Dependencies\ImGui\libs\GLFW\lib;$(ProjectDir)ext\Dependencies\Freetype\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <IgnoreSpecificDefaultLibraries>MSVCRT.lib;MSVCRTD.lib;MSVCPRT.lib;MSVCPRTD.lib;%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="src\Cheat\Cheat.cpp" />
+    <ClCompile Include="src\Cheat\WebPanel.cpp" />
     <ClCompile Include="src\Render\Fonts\Fonts.cpp" />
     <ClCompile Include="src\Render\Interface\Interface.cpp" />
     <ClCompile Include="src\Render\Overlay\Render\Render.cpp" />

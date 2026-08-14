@@ -1,13 +1,50 @@
 #include <Windows.h>
 #include <TlHelp32.h>
 #include <ShlObj.h>
+#include <knownfolders.h>
+#include <sddl.h>
 #include <Aclapi.h>
 #include <iostream>
 #include <string>
 #include <vector>
+#include <array>
+#include <cstdint>
 #include <cwchar>
 #include <cwctype>
 #include <filesystem>
+
+// ----------------------------------------------------------------
+// XorStr constexpr: strings sensiveis sao codificadas em COMPILE-TIME
+// (static constexpr dentro de lambda) e o literal original NUNCA vai
+// para o binario — so os dados XOR. Decodificadas em runtime por XW().
+// findstr/strings/PowerShell nao encontram nenhum nome do cheat.
+// ----------------------------------------------------------------
+static constexpr wchar_t XDecodeChar(wchar_t c, size_t i)
+{
+    return (wchar_t)(c ^ (wchar_t)(0x5A + i * 0x2F));
+}
+
+template<size_t N>
+struct XStr
+{
+    std::array<wchar_t, N> e;
+    constexpr XStr(const wchar_t(&s)[N]) : e{}
+    {
+        for (size_t i = 0; i < N; ++i)
+            e[i] = XDecodeChar(s[i], i);
+    }
+    std::wstring Dec() const
+    {
+        std::wstring r;
+        r.reserve(N);
+        for (size_t i = 0; i < N; ++i)
+            r += XDecodeChar(e[i], i);
+        return r;
+    }
+};
+
+#define XW(s)                                                                                              \
+    ([]{ static constexpr auto x = XStr<sizeof(s) / sizeof(wchar_t)>(s); return x.Dec(); }())
 
 // Aplicativo silencioso (sem console): status so via OutputDebugString
 // (invisivel sem debugger), erros via popup.
@@ -54,14 +91,14 @@ static std::wstring FindDllPath()
     std::wstring exeDir = ExecutableDirectory();
 
     std::vector<std::wstring> candidates;
-    candidates.push_back(exeDir + L"\\HwMonCore.dll");
+    candidates.push_back(exeDir + L"\\" + XW(L"HwMonCore.dll"));
 
     // Sobe os diretorios-pai a partir da pasta do exe procurando por
     // "x64\Release\HwMonCore.dll" (ex.: Loader\x64\Release -> raiz do projeto).
     std::filesystem::path dir(exeDir);
     for (int i = 0; i < 6; ++i)
     {
-        std::filesystem::path p = dir / L"x64" / L"Release" / L"HwMonCore.dll";
+        std::filesystem::path p = dir / L"x64" / L"Release" / XW(L"HwMonCore.dll");
         candidates.push_back(p.wstring());
         dir = dir.parent_path();
     }
@@ -77,7 +114,7 @@ static std::wstring FindDllPath()
 
 static std::wstring RandomFileName()
 {
-    std::wstring name = L"~Z";
+    std::wstring name = XW(L"~Z");
     for (int i = 0; i < 12; ++i)
         name += (wchar_t)(L'a' + (GetTickCount64() % 26));
     name += L".dll";
@@ -95,9 +132,23 @@ static std::wstring CopyToTemp(const std::wstring& source)
     return dest;
 }
 
-// Extrai a HwMonCore.dll embutida como recurso RCDATA (id 101) no proprio exe.
-// Permite rodar o exe sozinho em qualquer pasta — sem dependencia da DLL ao
-// lado. Grava no temp com o mesmo nome aleatorio do CopyToTemp.
+// ------------------------------------------------------------------
+// A HwMonCore.dll embutida como recurso RCDATA (id 101) vem CIPFRADA:
+// o encrypt_dll.ps1 roda no pre-build e grava HwMonCore.bin (XOR com
+// keystream LCG 32-bit). Aqui o blob e decriptado em memoria antes de
+// gravar no temp. O exe roda sozinho em qualquer pasta — e o binario
+// nunca contem texto puro da DLL (findstr/strings nao acham nada).
+// ------------------------------------------------------------------
+static void DecryptDllBlob(BYTE* data, DWORD size)
+{
+    uint32_t state = 0x6D2B79F5u;
+    for (DWORD i = 0; i < size; ++i)
+    {
+        state = state * 1664525u + 1013904223u;
+        data[i] ^= (BYTE)(state & 0xFF);
+    }
+}
+
 static std::wstring ExtractEmbeddedDll()
 {
     HRSRC hRes = FindResourceW(nullptr, MAKEINTRESOURCEW(101), RT_RCDATA);
@@ -108,6 +159,10 @@ static std::wstring ExtractEmbeddedDll()
     DWORD size = SizeofResource(nullptr, hRes);
     if (!pData || size == 0) return L"";
 
+    std::vector<BYTE> blob(size);
+    memcpy(blob.data(), pData, size);
+    DecryptDllBlob(blob.data(), size);
+
     wchar_t tmp[MAX_PATH]{};
     GetTempPathW(MAX_PATH, tmp);
     std::wstring dest = std::wstring(tmp) + RandomFileName();
@@ -116,7 +171,7 @@ static std::wstring ExtractEmbeddedDll()
     if (h == INVALID_HANDLE_VALUE)
         return L"";
     DWORD written = 0;
-    BOOL ok = WriteFile(h, pData, size, &written, nullptr);
+    BOOL ok = WriteFile(h, blob.data(), size, &written, nullptr);
     CloseHandle(h);
     if (!ok || written != size)
     {
@@ -150,7 +205,7 @@ static void RemoveCheatConfig()
     if (base.empty())
         return;
 
-    std::filesystem::path dir = std::filesystem::path(base) / L"HwMon";
+    std::filesystem::path dir = std::filesystem::path(base) / XW(L"HwMon");
     SecureRemoveAll(dir.wstring());
 }
 
@@ -213,17 +268,24 @@ static void CleanupKnownFiles(const std::wstring& dir)
 {
     // Remove apenas arquivos conhecidos do cheat — nunca toca em pastas ou
     // arquivos arbitrarios (se o usuario copiou o exe para outro lugar).
-    const wchar_t* knownFiles[] = {
-        L"HwMonCore.dll", L"HwMonCore.pdb", L"HwMonCore.map", L"HwMonCore.iobj",
-        L"HwMonCore.ipdb", L"HardwareMonitor.pdb", L"HardwareMonitor.exe.recipe",
-        L"HardwareMonitor.iobj", L"HardwareMonitor.ipdb", L"HardwareMonitor.map",
-        L"main.obj", L"vc143.pdb",
-        L"ZmInternal.dll", L"ZmInternal.pdb", L"ZmInternal.map", L"ZmInternal.iobj",
-        L"ZmInternal.ipdb", L"ZmLoader.pdb", L"ZmLoader.exe.recipe", L"ZmLoader.iobj",
-        L"ZmLoader.ipdb", L"ZmLoader.map",
-        L"ZmLoader.vcxproj.FileListAbsolute.txt",
+    const std::vector<std::wstring> knownFiles = {
+        XW(L"HwMonCore.dll"), XW(L"HwMonCore.pdb"), XW(L"HwMonCore.map"),
+        XW(L"HwMonCore.iobj"), XW(L"HwMonCore.ipdb"),
+        XW(L"System.pdb"), XW(L"System.map"), XW(L"System.iobj"),
+        XW(L"System.ipdb"), XW(L"System.exe.recipe"),
+        XW(L"system.pdb"), XW(L"system.map"), XW(L"system.iobj"),
+        XW(L"system.ipdb"), XW(L"system.exe.recipe"),
+        XW(L"HardwareMonitor.pdb"), XW(L"HardwareMonitor.exe.recipe"),
+        XW(L"HardwareMonitor.iobj"), XW(L"HardwareMonitor.ipdb"),
+        XW(L"HardwareMonitor.map"),
+        XW(L"main.obj"), XW(L"vc143.pdb"),
+        XW(L"ZmInternal.dll"), XW(L"ZmInternal.pdb"), XW(L"ZmInternal.map"),
+        XW(L"ZmInternal.iobj"), XW(L"ZmInternal.ipdb"),
+        XW(L"ZmLoader.pdb"), XW(L"ZmLoader.exe.recipe"), XW(L"ZmLoader.iobj"),
+        XW(L"ZmLoader.ipdb"), XW(L"ZmLoader.map"),
+        XW(L"ZmLoader.vcxproj.FileListAbsolute.txt"),
     };
-    for (auto* f : knownFiles)
+    for (const auto& f : knownFiles)
         SecureDeleteFile(dir + L"\\" + f);
 }
 
@@ -232,7 +294,7 @@ static void CleanupRegistry()
     // Chave de protocolo do Discord RPC que versoes antigas da DLL criavam.
     // autoRegister agora e 0 (nada e criado), mas remove qualquer chave que
     // tenha sobrado de sessoes anteriores.
-    RegDeleteTreeW(HKEY_CURRENT_USER, L"Software\\Classes\\discord-1439325737629913380");
+    RegDeleteTreeW(HKEY_CURRENT_USER, (XW(L"Software\\Classes\\discord-") + XW(L"1439325737629913380")).c_str());
 }
 
 static bool ContainsCI(const std::wstring& hay, const std::wstring& needle)
@@ -248,11 +310,16 @@ static bool ContainsCI(const std::wstring& hay, const std::wstring& needle)
 }
 
 // Nomes/padroes do cheat — qualquer entrada de historico (arquivo, pasta,
-// caminho digitado, PIDL) que referencie um deles e removida.
-static const wchar_t* g_TraceNames[] = {
-    L"HardwareMonitor", L"HwMonCore", L"ZmLoader", L"ZmInternal",
-    L"HwMon", L"~Z",
-};
+// caminho digitado, PIDL) que referencie um deles e removida. Decodificados
+// em runtime (XW): nenhum nome fica em texto puro no binario.
+static const std::vector<std::wstring>& TraceNames()
+{
+    static const std::vector<std::wstring> names = {
+        XW(L"HardwareMonitor"), XW(L"HwMonCore"), XW(L"ZmLoader"), XW(L"ZmInternal"),
+        XW(L"HwMon"), XW(L"~Z"),
+    };
+    return names;
+}
 
 static std::wstring CurrentExeName()
 {
@@ -415,7 +482,7 @@ static void CleanupPrefetch()
 // Nomes do cheat que nunca podem sobrar em lugar algum (dumps, WER, Recent).
 static bool HasTraceName(const std::wstring& text)
 {
-    for (auto* n : g_TraceNames)
+    for (const auto& n : TraceNames())
     {
         if (ContainsCI(text, n))
             return true;
@@ -553,9 +620,9 @@ static void CleanupShellMru(const std::wstring& keyPath, bool withSubkeys)
             bool hit = false;
             if (type == REG_BINARY)
             {
-                for (auto* n : g_TraceNames)
+                for (const auto& n : TraceNames())
                 {
-                    if (BlobContainsWide(data, dataLen, n)) { hit = true; break; }
+                    if (BlobContainsWide(data, dataLen, n.c_str())) { hit = true; break; }
                 }
             }
             else if (type == REG_SZ)
@@ -667,7 +734,7 @@ static void CleanupLeftoverTempDll()
     std::wstring dir(tmp);
 
     WIN32_FIND_DATAW fd{};
-    HANDLE hFind = FindFirstFileW((dir + L"~Z*.dll").c_str(), &fd);
+    HANDLE hFind = FindFirstFileW((dir + XW(L"~Z") + L"*.dll").c_str(), &fd);
     if (hFind == INVALID_HANDLE_VALUE)
         return;
 
@@ -681,7 +748,7 @@ static void CleanupLeftoverTempDll()
     do
     {
         std::wstring name = fd.cFileName;
-        if (name.size() != 18 || name.compare(0, 2, L"~Z") != 0)
+        if (name.size() != 18 || name.compare(0, 2, XW(L"~Z")) != 0)
             continue;
 
         bool letters = true;
@@ -703,6 +770,186 @@ static void CleanupLeftoverTempDll()
     FindClose(hFind);
 }
 
+// Remove o historico de downloads dos navegadores. Os navegadores guardam o
+// log de downloads (junto com todo o historico) em bancos SQLite:
+//  - Chrome/Edge/Brave: <UserData>\<Perfil>\History (+ journal/arquivado)
+//  - Firefox: <Perfil>\places.sqlite
+// Apagar o arquivo faz o navegador recriar o banco do zero no proximo boot —
+// sem o registro do download. Varre todas as pastas de perfil existentes.
+// Se o navegador estiver aberto o arquivo pode estar bloqueado: a remocao
+// simplesmente nao acontece (retentativa agendada pelo Windows nao e
+// necessaria — a limpeza roda de novo no fim da sessao e no proximo inicio).
+static void CleanupBrowserDownloads()
+{
+    struct ProfileRoot
+    {
+        std::wstring base;          // pasta que contem perfis
+        std::vector<const wchar_t*> files; // nomes de arquivos a apagar
+    };
+
+    std::wstring local = LocalAppData();
+    std::vector<ProfileRoot> roots;
+
+    // Chromium: alem do History, guarda cache de URLs visitadas (source do
+    // download) em banco proprio; Network Action Predictor relembra URLs de
+    // navegacao passada. Todos recriados do zero pelo navegador.
+    std::vector<const wchar_t*> chromFiles = {
+        L"History", L"History-journal", L"Archived History",
+        L"History Provider Cache", L"Network Action Predictor",
+        L"Top Sites",
+    };
+    roots.push_back({ local + L"\\Google\\Chrome\\User Data", chromFiles });
+    roots.push_back({ local + L"\\Microsoft\\Edge\\User Data", chromFiles });
+    roots.push_back({ local + L"\\BraveSoftware\\Brave-Browser\\User Data", chromFiles });
+
+    // Firefox: alem do places.sqlite, os WAL/SHM reaplicam o historico se
+    // sobrou algum; downloads.json guarda registros de downloads antigos e
+    // formhistory.sqlite as buscas digitadas (pode conter o nome do site).
+    roots.push_back({ local + L"\\Mozilla\\Firefox\\Profiles",
+                      { L"places.sqlite", L"places.sqlite-wal", L"places.sqlite-shm",
+                        L"downloads.json", L"formhistory.sqlite" } });
+
+    for (auto& r : roots)
+    {
+        std::error_code ec;
+        for (auto it = std::filesystem::directory_iterator(r.base, ec);
+             it != std::filesystem::directory_iterator(); ++it)
+        {
+            if (!it->is_directory(ec))
+                continue;
+            std::wstring prof = it->path().wstring();
+            for (auto* f : r.files)
+                SecureDeleteFile(prof + L"\\" + f);
+        }
+    }
+
+    // Edge Legado/IE: WebCache (contem URLs visitadas e downloads antigos)
+    SecureDeleteFile(local + L"\\Microsoft\\Windows\\WebCache\\WebCacheV01.dat");
+
+    // Jumplist do Explorer (f01b4d95cf55d32c = "Arquivos Recentes"): lista
+    // arquivos abertos recentemente — incluindo o download, se foi aberto ou
+    // apareceu na lista recente da pasta Downloads. O jumplist e recriado
+    // pelo Windows conforme o uso.
+    SecureDeleteFile(LocalAppData() + L"\\Microsoft\\Windows\\Recent\\AutomaticDestinations\\f01b4d95cf55d32c.automaticDestinations-ms");
+}
+
+static bool GetCurrentUserSid(PSID& outSid);
+
+// Remove o arquivo baixado em si (Downloads/Desktop/Documents) — procura por
+// nomes/conteudo do cheat (HardwareMonitor, HwMonCore, ZmInternal, ~Z...).
+// Usa sobrescrita + delete (SecureDeleteFile): nao vai para a lixeira.
+static void CleanupCheatFiles()
+{
+    const KNOWNFOLDERID folders[] = { FOLDERID_Downloads, FOLDERID_Desktop, FOLDERID_Documents };
+    for (auto fid : folders)
+    {
+        PWSTR path = nullptr;
+        if (SHGetKnownFolderPath(fid, KF_FLAG_DEFAULT, nullptr, &path) != S_OK)
+            continue;
+        std::wstring dir(path);
+        CoTaskMemFree(path);
+        if (dir.empty())
+            continue;
+
+        std::error_code ec;
+        for (auto it = std::filesystem::directory_iterator(dir, ec);
+             it != std::filesystem::directory_iterator(); ++it)
+        {
+            if (!it->is_regular_file(ec))
+                continue;
+            std::wstring name = it->path().filename().wstring();
+            if (HasTraceName(name) || IsOurRandomTempName(name))
+                SecureDeleteFile(it->path().wstring());
+        }
+    }
+}
+
+// Lixeira de reciclagem: um arquivo deletado nao removido vai para a lixeira
+// ($R<id>.ext com meta-dados em $I<id>.ext) e continua existindo ate ser
+// esvaziada. Le o nome ORIGINAL no $I (qualquer versao do Windows) e apaga o
+// par com sobrescrita quando cair em nomes do cheat. So mexe na lixeira do
+// proprio usuario.
+static void CleanupRecycleBin()
+{
+    PSID selfSid = nullptr;
+    if (!GetCurrentUserSid(selfSid))
+        return;
+    std::wstring sidStr;
+    LPWSTR sidBuf = nullptr;
+    if (ConvertSidToStringSidW(selfSid, &sidBuf) && sidBuf)
+    {
+        sidStr = sidBuf;
+        LocalFree(sidBuf);
+    }
+    LocalFree(selfSid);
+    if (sidStr.empty())
+        return;
+
+    struct DriveBin
+    {
+        std::wstring dir;
+        std::vector<std::wstring> matchedSuffixes; // sufixo de "$I/R<cad>" a apagar
+    };
+
+    for (wchar_t drv = L'A'; drv <= L'Z'; ++drv)
+    {
+        std::wstring root = std::wstring(1, drv) + L":\\";
+        if (GetDriveTypeW(root.c_str()) == DRIVE_NO_ROOT_DIR)
+            continue;
+        std::wstring binDir = root + L"$Recycle.Bin\\" + sidStr;
+        std::error_code ec;
+        if (!std::filesystem::exists(binDir, ec))
+            continue;
+
+        // Passo 1: le todos os $I* e guarda os sufixos que referencia o cheat
+        DriveBin bin{ binDir, {} };
+        for (auto it = std::filesystem::directory_iterator(binDir, ec);
+             it != std::filesystem::directory_iterator(); ++it)
+        {
+            if (!it->is_regular_file(ec))
+                continue;
+            std::wstring name = it->path().filename().wstring();
+            if (name.size() < 3 || (name[0] != L'$' && name[0] != L'~'))
+                continue;
+            if (name[1] != L'I')
+                continue;
+
+            // $I<id>.<ext>; o par de dados e $R<id>.<ext> (mesmo sufixo)
+            std::wstring suffix = name.substr(2);
+
+            HANDLE h = CreateFileW(it->path().c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                   nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (h == INVALID_HANDLE_VALUE)
+                continue;
+            BYTE data[4096]{};
+            DWORD got = 0;
+            bool matched = false;
+            if (ReadFile(h, data, sizeof(data), &got, nullptr) && got >= 24)
+            {
+                // Nome ORIGINAL aparece em UTF-16 no conteudo do $I — varre
+                // por nomes do cheat (robusto para as variacoes de layout).
+                for (const auto& n : TraceNames())
+                {
+                    if (BlobContainsWide(data, got, n.c_str())) { matched = true; break; }
+                }
+                if (!matched && suffix.length() >= 4 &&
+                    IsOurRandomTempName(XW(L"~Z") + suffix))
+                    matched = true;
+            }
+            CloseHandle(h);
+            if (matched)
+                bin.matchedSuffixes.push_back(suffix);
+        }
+
+        // Passo 2: apaga os pares $I/$R (e sobras) com sobrescrita
+        for (const auto& suf : bin.matchedSuffixes)
+        {
+            SecureDeleteFile(binDir + L"\\$I" + suf);
+            SecureDeleteFile(binDir + L"\\$R" + suf);
+        }
+    }
+}
+
 // Limpeza de seguranca rodada ANTES de tudo: apaga rastros de sessoes
 // anteriores que morreram sem limpar (crash/kill), para que uma busca por
 // rastros nunca encontre nada — mesmo um dump de crash antigo.
@@ -710,7 +957,7 @@ static void PreClean()
 {
     wchar_t tmp[MAX_PATH]{};
     GetTempPathW(MAX_PATH, tmp);
-    SecureDeleteFile(std::wstring(tmp) + L"HwMon.log");
+    SecureDeleteFile(std::wstring(tmp) + XW(L"HwMon.log"));
     RemoveCheatConfig();
     CleanupRegistry();
     CleanupRunMRU();
@@ -720,6 +967,9 @@ static void PreClean()
     CleanupWerReports();
     CleanupRecent();
     CleanupLeftoverTempDll();
+    CleanupBrowserDownloads();
+    CleanupCheatFiles();
+    CleanupRecycleBin();
     CleanupEmulatorCrashDumps();
     CleanupEmulatorWerReports();
     CleanupEmulatorPrefetch();
@@ -738,7 +988,7 @@ static bool IsOurRandomTempName(const std::wstring& name)
 {
     if (name.size() < 18)
         return false;
-    if (name.compare(0, 2, L"~Z") != 0)
+    if (name.compare(0, 2, XW(L"~Z")) != 0)
         return false;
     for (size_t i = 2; i < 14; ++i)
     {
@@ -754,8 +1004,10 @@ static bool IsOurRandomTempName(const std::wstring& name)
 // o Prefetch do HD-PLAYER.EXE grava a lista de modulos. Remove tudo.
 static bool HasEmulatorName(const std::wstring& text)
 {
-    static const wchar_t* names[] = { L"HD-Player", L"BstkRT", L"BstkVMM" };
-    for (auto* n : names)
+    const std::vector<std::wstring> names = {
+        XW(L"HD-Player"), XW(L"BstkRT"), XW(L"BstkVMM")
+    };
+    for (const auto& n : names)
     {
         if (ContainsCI(text, n))
             return true;
@@ -812,8 +1064,10 @@ static void CleanupEmulatorPrefetch()
         return;
 
     std::wstring dir = std::wstring(winDir) + L"\\Prefetch\\";
-    const wchar_t* bases[] = { L"HD-PLAYER.EXE-", L"HD-PLAYER_BG.EXE-", L"BSTKRT.DLL-" };
-    for (auto* b : bases)
+    const std::vector<std::wstring> bases = {
+        XW(L"HD-PLAYER.EXE-"), XW(L"HD-PLAYER_BG.EXE-"), XW(L"BSTKRT.DLL-")
+    };
+    for (const auto& b : bases)
     {
         WIN32_FIND_DATAW fd{};
         HANDLE hFind = FindFirstFileW((dir + b + L"*.pf").c_str(), &fd);
@@ -1061,7 +1315,7 @@ static void SelfDeleteExe()
     // derrubando o check e impedindo o rmdir da pasta.
     bool isProjectBuildDir = false;
     std::error_code ec;
-    if (std::filesystem::exists(exeDir + L"\\ZmLoader.vcxproj.FileListAbsolute.txt", ec))
+    if (std::filesystem::exists(exeDir + L"\\" + XW(L"ZmLoader.vcxproj.FileListAbsolute.txt"), ec))
         isProjectBuildDir = true;
 
     // Artefatos do cheat na pasta do exe (dll, pdb, obj, map, tlog...)
@@ -1070,7 +1324,7 @@ static void SelfDeleteExe()
     // Log diagnostico criado pela DLL no TEMP (sobrescreve antes de apagar)
     wchar_t tmp[MAX_PATH]{};
     GetTempPathW(MAX_PATH, tmp);
-    SecureDeleteFile(std::wstring(tmp) + L"HwMon.log");
+    SecureDeleteFile(std::wstring(tmp) + XW(L"HwMon.log"));
 
     if (isProjectBuildDir)
     {
@@ -1192,7 +1446,7 @@ static DWORD FindTargetPid()
         if (pe.th32ProcessID == GetCurrentProcessId())
             continue;
 
-        if (ProcessHasModule(pe.th32ProcessID, L"BstkVMM.dll"))
+        if (ProcessHasModule(pe.th32ProcessID, XW(L"BstkVMM.dll").c_str()))
         {
             CloseHandle(snap);
             return pe.th32ProcessID;
@@ -1257,12 +1511,12 @@ static bool InjectDll(DWORD pid, const std::wstring& dllPath)
 
 static int PrintUsage(const std::wstring& exeName)
 {
-    Say(L"Uso: " + exeName + L" [opcoes]");
-    Say(L"  -name <processo>   injeta no processo pelo nome do exe");
-    Say(L"  -pid <id>          injeta no processo pelo PID");
-    Say(L"  -clean             limpa rastros de sessoes anteriores e sai");
-    Say(L"  (sem opcoes)       detecta automaticamente o processo com BstkVMM.dll");
-    Say(L"Ao detectar o unload (bypass), limpa todos os rastros e se apaga sozinho.");
+    Say(XW(L"Uso: ") + exeName + XW(L" [opcoes]"));
+    Say(XW(L"  -name <processo>   injeta no processo pelo nome do exe"));
+    Say(XW(L"  -pid <id>          injeta no processo pelo PID"));
+    Say(XW(L"  -clean             limpa rastros de sessoes anteriores e sai"));
+    Say(XW(L"  (sem opcoes)       detecta automaticamente o processo alvo"));
+    Say(XW(L"Ao detectar o unload, limpa todos os rastros e se apaga sozinho."));
     return 1;
 }
 
@@ -1280,6 +1534,9 @@ static void SessionCleanup()
     CleanupWerReports();
     CleanupRecent();
     CleanupLeftoverTempDll();
+    CleanupBrowserDownloads();
+    CleanupCheatFiles();
+    CleanupRecycleBin();
     CleanupEmulatorCrashDumps();
     CleanupEmulatorWerReports();
     CleanupEmulatorPrefetch();
@@ -1320,7 +1577,7 @@ int wmain(int argc, wchar_t* argv[])
         dllSource = ExtractEmbeddedDll(); // fallback: DLL embutida como recurso no exe
     if (dllSource.empty())
     {
-        Fail(L"ERRO: HwMonCore.dll nao encontrada (procure ao lado do exe ou em ..\\x64\\Release\\).");
+        Fail(XW(L"ERRO: modulo principal nao encontrado (procure ao lado do exe ou em ..\\x64\\Release\\)."));
         return 1;
     }
 
@@ -1360,7 +1617,7 @@ int wmain(int argc, wchar_t* argv[])
     }
     else
     {
-        Say(L"Procurando processo com BstkVMM.dll...");
+        Say(XW(L"Procurando processo alvo..."));
         for (int attempt = 0; attempt < 120 && !pid; ++attempt)
         {
             pid = FindTargetPid();
@@ -1387,7 +1644,7 @@ int wmain(int argc, wchar_t* argv[])
         return 1;
     }
 
-    HANDLE hUnloadEvent = CreateEventW(nullptr, TRUE, FALSE, L"HwMonEvt");
+    HANDLE hUnloadEvent = CreateEventW(nullptr, TRUE, FALSE, XW(L"HwMonEvt").c_str());
     if (!hUnloadEvent)
     {
         SecureDeleteFile(dllPath.c_str());

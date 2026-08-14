@@ -69,6 +69,79 @@ namespace
 	static BoneCache g_Cache[MAX_CACHE];
 	static int g_CacheCount = 0;
 
+	// =====================================================================
+	// Fallback p/ entidades sem UMA utilizavel (bots da ilha de treinamento
+	// saem pelo caminho UMA com skeleton/dicionario inexistente): os 18
+	// bones principais sao lidos direto da ENTIDADE (offsets fixos do
+	// PlayerBase, mesma versao do jogo), e cada um e' um Transform/Node que
+	// resolve para a mesma TransformAccessArray usada pelo caminho UMA.
+	// =====================================================================
+
+	static constexpr int FB_COUNT = 18;
+
+	// Head, Neck, LShoulder, RShoulder, LElbow, RElbow, LWrist, RWrist,
+	// LHand, RHand, Hip, Groin, Root, RootBone, LAnkle, RAnkle, LFoot, RFoot
+	static const uintptr_t kEntityBoneOffsets[FB_COUNT] = {
+		0x458, 0x460, 0x48C, 0x490, 0x49C, 0x4A0,
+		0x454, 0x480, 0x484, 0x494, 0x468, 0x45C,
+		0x46C, 0x464, 0x474, 0x470, 0x47C, 0x478
+	};
+
+	enum FB_Bone
+	{
+		FB_HEAD, FB_NECK, FB_LSHOULDER, FB_RSHOULDER, FB_LELBOW, FB_RELBOW,
+		FB_LWRIST, FB_RWRIST, FB_LHAND, FB_RHAND, FB_HIP, FB_GROIN,
+		FB_ROOT, FB_ROOTBONE, FB_LANKLE, FB_RANKLE, FB_LFOOT, FB_RFOOT
+	};
+
+	struct FallbackCache
+	{
+		uintptr_t entity;
+		uintptr_t boneNode[FB_COUNT];
+	};
+
+	static FallbackCache g_FbCache[MAX_CACHE];
+	static int g_FbCacheCount = 0;
+
+	static FallbackCache* FindFallbackCache( uintptr_t entity )
+	{
+		for ( int i = 0; i < g_FbCacheCount; ++i )
+			if ( g_FbCache[ i ].entity == entity )
+				return &g_FbCache[ i ];
+		return nullptr;
+	}
+
+	static FallbackCache* AllocFallbackCache( )
+	{
+		if ( g_FbCacheCount < MAX_CACHE )
+			return &g_FbCache[ g_FbCacheCount++ ];
+		return &g_FbCache[ 0 ];
+	}
+
+	// Resolve um bone node do Entity ate a TransformAccessArray
+	static bool ResolveBoneAccess( uintptr_t boneNode, bool N32, int& outIndex, uintptr_t& outMatrixList, uintptr_t& outMatrixIndices )
+	{
+		auto ReadPtr = [ N32 ] ( uintptr_t a ) -> uintptr_t
+			{
+				return N32 ? g_FreeFireMemory.Read<uint32_t>( a ) : g_FreeFireMemory.Read<uint64_t>( a );
+			};
+
+		uintptr_t tr = ReadPtr( boneNode + Offsets::GetPosWorld::transObj );        // +0x8
+		if ( !tr ) return false;
+		uintptr_t ta = ReadPtr( tr + Offsets::GetPosWorld::transObj );              // +0x8
+		if ( !ta ) return false;
+
+		outIndex = g_FreeFireMemory.Read<int>( ta + Offsets::GetPosWorld::index );  // +0x24
+		uintptr_t matrix = ReadPtr( ta + Offsets::GetPosWorld::matrix );            // +0x20
+		if ( !matrix ) return false;
+
+		outMatrixList = ReadPtr( matrix + Offsets::GetPosWorld::matrix_list );      // +0x18
+		outMatrixIndices = ReadPtr( matrix + Offsets::GetPosWorld::matrix_indices );// +0x1C
+
+		return outMatrixList != 0 && outMatrixIndices != 0
+			&& outIndex >= 0 && outIndex < MAX_HIERARCHY;
+	}
+
 	BoneCache* FindCache(uintptr_t entity, uintptr_t umaData)
 	{
 		for (int i = 0; i < g_CacheCount; ++i)
@@ -130,6 +203,17 @@ bool Skeleton::DrawPlayer(ImDrawList* drawList, uintptr_t entity, uintptr_t umaD
 		return false;
 	}
 
+	// Caminho principal: UMA (hash de bones). Se a entidade nao tem UMA
+	// utilizavel (bots da ilha de treinamento), cai no fallback de bones
+	// diretos da entidade.
+	if (DrawPlayerUma( drawList, entity, umaData, isKnocked, viewMatrix, N32, V31 ))
+		return true;
+
+	return DrawPlayerEntityBones( drawList, entity, isKnocked, viewMatrix, N32 );
+}
+
+bool Skeleton::DrawPlayerUma(ImDrawList* drawList, uintptr_t entity, uintptr_t umaData, bool isKnocked, const Matrix4x4& viewMatrix, bool N32, bool V31)
+{
 	auto ReadPtr = [N32](uintptr_t addr) -> uintptr_t
 		{
 			return N32 ? g_FreeFireMemory.Read<uint32_t>(addr) : g_FreeFireMemory.Read<uint64_t>(addr);
@@ -225,6 +309,12 @@ bool Skeleton::DrawPlayer(ImDrawList* drawList, uintptr_t entity, uintptr_t umaD
 	ImU32 col = isKnocked ? ImColor(255, 0, 0, 255) : ImColor(g_Globals.Visuals.ESP.SkeletonColor[0], g_Globals.Visuals.ESP.SkeletonColor[1], g_Globals.Visuals.ESP.SkeletonColor[2], g_Globals.Visuals.ESP.SkeletonColor[3]);
 	float thick = 1.0f;
 
+	// Flag de degeneracao: se NENHUMA linha for desenhada (bones ausentes no
+	// UMA deste player), o caminho UMA devolve false e o DrawPlayer cai no
+	// fallback de bones diretos da entidade — senao o player fica sem
+	// skeleton ("skeleton quebrado" em alguns players).
+	bool anyDrawn = false;
+
 	auto DrawConns = [&](const Conn* conns, int count)
 		{
 			for (int i = 0; i < count; ++i)
@@ -238,6 +328,7 @@ bool Skeleton::DrawPlayer(ImDrawList* drawList, uintptr_t entity, uintptr_t umaD
 				if (sa.Z > 0 && sb.Z > 0)
 				{
 					drawList->AddLine(ImVec2(sa.X, sa.Y), ImVec2(sb.X, sb.Y), col, thick);
+					anyDrawn = true;
 				}
 			}
 		};
@@ -250,16 +341,170 @@ bool Skeleton::DrawPlayer(ImDrawList* drawList, uintptr_t entity, uintptr_t umaD
 	if (g_Globals.Visuals.ESP.SkeletonFingers)
 		DrawConns(kFingers, kFingersCount);
 
+	return anyDrawn;
+}
+
+// ===== Fallback: bones diretos da entidade (bots da ilha de treinamento) =====
+
+bool Skeleton::DrawPlayerEntityBones(ImDrawList* drawList, uintptr_t entity, bool isKnocked, const Matrix4x4& viewMatrix, bool N32)
+{
+	auto ReadPtr = [N32](uintptr_t addr) -> uintptr_t
+		{
+			return N32 ? g_FreeFireMemory.Read<uint32_t>(addr) : g_FreeFireMemory.Read<uint64_t>(addr);
+		};
+
+	// 1. Cache dos bone nodes (ponteiros estaveis)
+	FallbackCache* fc = FindFallbackCache( entity );
+	if ( !fc )
+	{
+		FallbackCache* nf = AllocFallbackCache( );
+		memset( nf, 0, sizeof( FallbackCache ) );
+		nf->entity = entity;
+		fc = nf;
+
+		for ( int i = 0; i < FB_COUNT; ++i )
+		{
+			uintptr_t node = ReadPtr( entity + kEntityBoneOffsets[ i ] );
+			if ( node )
+				fc->boneNode[ i ] = node;
+		}
+
+		// Sem nenhum bone, nao ha o que fazer
+		bool any = false;
+		for ( int i = 0; i < FB_COUNT; ++i )
+			if ( fc->boneNode[ i ] ) { any = true; break; }
+		if ( !any )
+			return false;
+	}
+
+	// 2. Hierarquia (bulk read, igual ao caminho UMA)
+	static TMatrix matrices[MAX_HIERARCHY];
+	static int parents[MAX_HIERARCHY];
+
+	uintptr_t matrixList = 0, matrixIndices = 0;
+	int baseIndex = -1;
+
+	for ( int i = 0; i < FB_COUNT; ++i )
+	{
+		if ( !fc->boneNode[ i ] ) continue;
+		if ( ResolveBoneAccess( fc->boneNode[ i ], N32, baseIndex, matrixList, matrixIndices ) )
+			break;
+	}
+	if ( baseIndex < 0 || !matrixList || !matrixIndices ) return false;
+
+	if ( !g_FreeFireMemory.Read( matrixList, matrices, sizeof( TMatrix ) * MAX_HIERARCHY ) ) return false;
+	if ( !g_FreeFireMemory.Read( matrixIndices, parents, sizeof( int ) * MAX_HIERARCHY ) ) return false;
+
+	// 3. Posicoes dos 18 bones
+	Vector3 pos[FB_COUNT];
+	int validCount = 0;
+
+	for ( int i = 0; i < FB_COUNT; ++i )
+	{
+		if ( !fc->boneNode[ i ] )
+		{
+			pos[ i ] = Vector3::Zero( );
+			continue;
+		}
+
+		int idx = -1;
+		uintptr_t ml = 0, mi = 0;
+		if ( ResolveBoneAccess( fc->boneNode[ i ], N32, idx, ml, mi ) )
+		{
+			pos[ i ] = CalcPosition( idx, matrices, parents );
+			++validCount;
+		}
+		else
+		{
+			pos[ i ] = Vector3::Zero( );
+		}
+	}
+
+	// Menos da metade dos bones validos: provavelmente offsets errados —
+	// nao desenha nada em vez de linhas malucas na tela.
+	if ( validCount < FB_COUNT / 2 )
+		return false;
+
+	// 4. Desenha
+	ImU32 col = isKnocked ? ImColor(255, 0, 0, 255) : ImColor(g_Globals.Visuals.ESP.SkeletonColor[0], g_Globals.Visuals.ESP.SkeletonColor[1], g_Globals.Visuals.ESP.SkeletonColor[2], g_Globals.Visuals.ESP.SkeletonColor[3]);
+	const float thick = 1.0f;
+
+	auto W2S = [ &viewMatrix ] ( const Vector3& w ) -> Vector3 { return W2S::World2Screen( viewMatrix, w ); };
+
+	auto DrawConn = [ & ] ( int a, int b )
+		{
+			const Vector3& pa = pos[ a ];
+			const Vector3& pb = pos[ b ];
+			if ( pa == Vector3::Zero( ) || pb == Vector3::Zero( ) ) return;
+
+			Vector3 sa = W2S( pa );
+			Vector3 sb = W2S( pb );
+			if ( sa.Z > 0 && sb.Z > 0 )
+				drawList->AddLine( ImVec2( sa.X, sa.Y ), ImVec2( sb.X, sb.Y ), col, thick );
+		};
+
+	// Coluna
+	DrawConn( FB_HEAD, FB_NECK );
+	DrawConn( FB_NECK, FB_HIP );
+
+	// Braco esquerdo
+	DrawConn( FB_NECK, FB_LSHOULDER );
+	DrawConn( FB_LSHOULDER, FB_LELBOW );
+	DrawConn( FB_LELBOW, FB_LWRIST );
+	DrawConn( FB_LWRIST, FB_LHAND );
+
+	// Braco direito
+	DrawConn( FB_NECK, FB_RSHOULDER );
+	DrawConn( FB_RSHOULDER, FB_RELBOW );
+	DrawConn( FB_RELBOW, FB_RWRIST );
+	DrawConn( FB_RWRIST, FB_RHAND );
+
+	// Pelve
+	DrawConn( FB_HIP, FB_GROIN );
+	DrawConn( FB_GROIN, FB_ROOTBONE );
+	DrawConn( FB_ROOTBONE, FB_ROOT );
+
+	// Perna esquerda
+	DrawConn( FB_HIP, FB_LANKLE );
+	DrawConn( FB_LANKLE, FB_LFOOT );
+
+	// Perna direita
+	DrawConn( FB_HIP, FB_RANKLE );
+	DrawConn( FB_RANKLE, FB_RFOOT );
+
+	// Cabeca (circulo proporcional ao pescoco)
+	if ( pos[ FB_HEAD ] != Vector3::Zero( ) && pos[ FB_NECK ] != Vector3::Zero( ) )
+	{
+		Vector3 sh = W2S( pos[ FB_HEAD ] );
+		if ( sh.Z > 0 )
+		{
+			float headRadius = Vector3::Distance( pos[ FB_HEAD ], pos[ FB_NECK ] ) * 0.35f;
+			drawList->AddCircle( ImVec2( sh.X, sh.Y ), headRadius, col, 0, thick );
+		}
+	}
+
 	return true;
 }
 
 void Skeleton::CleanupCache(const std::unordered_set<uintptr_t>& activeEntities)
 {
-	for (int i = 0; i < g_CacheCount; )
+	for ( int i = 0; i < g_CacheCount; )
 	{
 		if (activeEntities.find(g_Cache[i].entity) == activeEntities.end())
 		{
 			g_Cache[i] = g_Cache[--g_CacheCount];
+		}
+		else
+		{
+			++i;
+		}
+	}
+
+	for ( int i = 0; i < g_FbCacheCount; )
+	{
+		if ( activeEntities.find( g_FbCache[ i ].entity ) == activeEntities.end( ) )
+		{
+			g_FbCache[ i ] = g_FbCache[ --g_FbCacheCount ];
 		}
 		else
 		{
@@ -271,4 +516,5 @@ void Skeleton::CleanupCache(const std::unordered_set<uintptr_t>& activeEntities)
 void Skeleton::ClearCache()
 {
 	g_CacheCount = 0;
+	g_FbCacheCount = 0;
 }

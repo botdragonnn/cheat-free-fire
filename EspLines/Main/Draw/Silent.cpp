@@ -184,7 +184,19 @@ namespace Silent {
 
     static DWORD WINAPI ThreadProcWrapper(LPVOID)
     {
-        ThreadProc();
+        try
+        {
+            ThreadProc();
+        }
+        catch (...)
+        {
+            // Sem try/catch, g_Running ficava preso em 1 e Silent::Start()
+            // recusava recriar a thread (InterlockedExchange != 0) — o silent
+            // parava no meio da partida e nao voltava mais.
+            InterlockedExchange(&g_Running, 0);
+            InterlockedExchange64(&g_LocalPlayer, 0);
+            InterlockedExchange64(&g_TargetEntity, 0);
+        }
         return 0;
     }
 

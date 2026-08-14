@@ -2,6 +2,7 @@
 #include <VehCpuHook/VehCpuHook.hpp>
 #include <Cheat/Globals.hpp>
 #include <Windows.h>
+#include <exception>
 #include <XorStr.hpp>
 #include <Lazyimporter.hpp>
 
@@ -218,10 +219,28 @@ static void MakeColorTexture(GLuint* tex, float r, float g, float b, float a)
 
 static bool ChamsContextInitialize()
 {
-    auto& c = g_Globals.Visuals.Chams;
-    MakeColorTexture(&g_texNear, c.NearColor[0], c.NearColor[1], c.NearColor[2], c.NearColor[3]);
-    MakeColorTexture(&g_texFar, c.FarColor[0], c.FarColor[1], c.FarColor[2], c.FarColor[3]);
-    return true;
+    try
+    {
+        auto& c = g_Globals.Visuals.Chams;
+        MakeColorTexture(&g_texNear, c.NearColor[0], c.NearColor[1], c.NearColor[2], c.NearColor[3]);
+        MakeColorTexture(&g_texFar, c.FarColor[0], c.FarColor[1], c.FarColor[2], c.FarColor[3]);
+        return true;
+    }
+    catch (const std::exception&)
+    {
+        // Excecao dentro do hook GL (bad_alloc ao criar textura) propaga para
+        // a call do jogo e derruba o processo inteiro (ESP + overlay juntos).
+        // Falha controlada: nao habilita chams, jogo continua normal.
+        g_texNear = 0;
+        g_texFar = 0;
+        return false;
+    }
+    catch (...)
+    {
+        g_texNear = 0;
+        g_texFar = 0;
+        return false;
+    }
 }
 
 // =====================================================================

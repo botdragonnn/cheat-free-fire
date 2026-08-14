@@ -1001,15 +1001,25 @@ bool Memory::RestartAsync()
 		InterlockedExchange64( &s_LastRestartTick, GetTickCount64( ) );
 
 		int delayMs = 250;
-		while ( !g_Globals.General.ShutDown )
+		try
 		{
-			// Relocaliza libil2cpp + CR3. Se falhar (processo do jogo ainda
-			// reiniciando), tenta de novo com backoff crescente ate conseguir.
-			if ( g_FreeFireMemory.Restart( ) )
-				break;
+			while ( !g_Globals.General.ShutDown )
+			{
+				// Relocaliza libil2cpp + CR3. Se falhar (processo do jogo ainda
+				// reiniciando), tenta de novo com backoff crescente ate conseguir.
+				if ( g_FreeFireMemory.Restart( ) )
+					break;
 
-			std::this_thread::sleep_for( std::chrono::milliseconds( delayMs ) );
-			if ( delayMs < 5000 ) delayMs *= 2;
+				std::this_thread::sleep_for( std::chrono::milliseconds( delayMs ) );
+				if ( delayMs < 5000 ) delayMs *= 2;
+			}
+		}
+		catch ( ... )
+		{
+			// Excecao no rescan (bad_alloc do GetModuleAddress, etc.): libera o
+			// single-flight para a proxima tentativa. Sem isso, s_RestartPending
+			// ficava preso em 1 e a base NAO era mais relocalizada no meio da
+			// partida — o cheat nao voltava de um restart do jogo.
 		}
 		InterlockedExchange( &s_RestartPending, 0 );
 	} ).detach( );

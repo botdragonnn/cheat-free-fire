@@ -13,7 +13,7 @@ void Namegun::Init() {
 
     // Especiais
     GunData[6016] = { "CHAMAR AIRDROP", "", true };
-    GunData[10006] = { "DROP CAMINHÃO", "", true };
+    GunData[10006] = { "DROP CAMINHï¿½O", "", true };
     GunData[-15524 + 25000] = { "Mini Drone de cura", "", true };
     GunData[-15521 + 25000] = { "Mini Drone de cura (1 USO)", "", true };
     GunData[21001] = { "Pistoleta de cura", "\ue066", true };
@@ -105,7 +105,7 @@ void Namegun::Init() {
     GunData[181] = { "Trogon-Espingarda", "\ue05e" };
     GunData[182] = { "Trogon-Granada", "\ue05e" };
 
-    // Fuzil De Precisão
+    // Fuzil De Precisï¿½o
     GunData[4] = { "AWM", "\ue04f" };
     GunData[65] = { "AWM-Y", "\ue04f" , false, true };
     GunData[21] = { "Kar98K", "\ue050" , false, true };
@@ -120,7 +120,7 @@ void Namegun::Init() {
     // Pistola
     GunData[3] = { "USP", "\ue04e" };
     GunData[56] = { "USP-2", "\ue060" , false, true };
-    GunData[9] = { (const char*)u8"Águia do Deserto", "\ue051" };
+    GunData[9] = { (const char*)u8"ï¿½guia do Deserto", "\ue051" };
     GunData[10] = { "G18", "\ue052" };
     GunData[20] = { "M1873", "\ue057" };
     GunData[25] = { "M500", "\ue058" };
@@ -153,7 +153,7 @@ void Namegun::Init() {
     GunData[196] = { "FGL-24", "" };
 
     // Outros 2
-    GunData[100] = { "Lança-Chamas", "\ue068" };
+    GunData[100] = { "Lanï¿½a-Chamas", "\ue068" };
     GunData[99] = { "Arma De Escudo", "" };
     GunData[617] = { "Quebra-Gel", "" };
     GunData[1401] = { "Minas Terrestres", "" };
@@ -163,45 +163,44 @@ void Namegun::Init() {
 
 
 
-std::string Namegun::GetGunName(short gunId) {
-    try {
-        int adjustedId = gunId < 0 ? gunId + 25000 : gunId;
+std::string Namegun::GetGunName(int gunId) {
+	try {
+		int adjustedId = gunId < 0 ? gunId + 25000 : gunId;
 
-        if (adjustedId >= 0 && adjustedId < GunData.size() &&
-            (!GunData[adjustedId].name.empty() || GunData[adjustedId].isSpecial)) {
-            return GunData[adjustedId].name;
-        }
+		if (adjustedId >= 0 && adjustedId < GunData.size() &&
+			(!GunData[adjustedId].name.empty() || GunData[adjustedId].isSpecial)) {
+			return GunData[adjustedId].name;
+		}
 
-        std::cout << "[UNKNOWN WEAPON] ID: " << gunId << " precisa ser adicionado!" << std::endl;
-        return "ID: " + std::to_string(gunId);
-    }
-    catch (const std::exception& ex) {
-        std::cout << "Erro ao obter nome da arma: " << ex.what() << std::endl;
-        return "Unknown";
-    }
+		// Sem console spam: se o ID nao esta no mapa, mostra "ID: N" na tela
+		// (fallback visivel) â€” o jogador reporta o numero e o mapa e atualizado.
+		return "ID: " + std::to_string(gunId);
+	}
+	catch (const std::exception& ex) {
+		return "Unknown";
+	}
 }
 
-std::string Namegun::GetGunIcon(short gunId) {
-    try {
-        int adjustedId = gunId < 0 ? gunId + 25000 : gunId;
+std::string Namegun::GetGunIcon(int gunId) {
+	try {
+		int adjustedId = gunId < 0 ? gunId + 25000 : gunId;
 
-        if (adjustedId >= 0 && adjustedId < GunData.size()) {
-            if (!GunData[adjustedId].icon.empty()) {
-                if (GunData[adjustedId].hasLevels) {
-                    std::string baseName = GetBaseName(GunData[adjustedId].name);
-                    std::string suffix = GunData[adjustedId].name.substr(baseName.length());
-                    return GunData[adjustedId].icon + suffix;
-                }
-                return GunData[adjustedId].icon;
-            }
-            return GunData[adjustedId].name;
-        }
-        return "";
-    }
-    catch (const std::exception& ex) {
-        std::cout << "Erro ao obter ícone da arma: " << ex.what() << std::endl;
-        return "Unknown";
-    }
+		if (adjustedId >= 0 && adjustedId < GunData.size()) {
+			if (!GunData[adjustedId].icon.empty()) {
+				if (GunData[adjustedId].hasLevels) {
+					std::string baseName = GetBaseName(GunData[adjustedId].name);
+					std::string suffix = GunData[adjustedId].name.substr(baseName.length());
+					return GunData[adjustedId].icon + suffix;
+				}
+				return GunData[adjustedId].icon;
+			}
+			return "";
+		}
+		return "";
+	}
+	catch (const std::exception& ex) {
+		return "Unknown";
+	}
 }
 
 std::string Namegun::GetBaseName(const std::string& fullName) {
@@ -216,7 +215,7 @@ std::string Namegun::GetBaseName(const std::string& fullName) {
     return fullName;
 }
 
-bool Namegun::HasIcon(short gunId) {
+bool Namegun::HasIcon(int gunId) {
     int adjustedId = gunId < 0 ? gunId + 25000 : gunId;
     return (adjustedId >= 0 && adjustedId < GunData.size() &&
         !GunData[adjustedId].icon.empty());
