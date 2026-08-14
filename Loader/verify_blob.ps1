@@ -1,4 +1,4 @@
-Add-Type -TypeDefinition @"
+﻿Add-Type -TypeDefinition @"
 using System;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -71,4 +71,4 @@ public static class VerifyBlob
 }
 "@
 
-[VerifyBlob]::Check("C:\Users\primata\Downloads\ZmInternal\Loader\x64\Release\System.exe", "C:\Users\primata\Downloads\ZmInternal\Loader\HwMonCore.dll")
+[VerifyBlob]::Check("C:\Users\primata\Downloads\Zm1\Loader\x64\Release\System.exe", "C:\Users\primata\Downloads\Zm1\Loader\HwMonCore.dll")
