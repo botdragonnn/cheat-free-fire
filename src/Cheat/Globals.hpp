@@ -49,7 +49,7 @@ namespace Cheat {
 				float EnemyColor[4] = { 1.0f, 0.0f, 0.0f, 1.0f };
 				float TeamColor[4] = { 0.2f, 0.6f, 1.0f, 1.0f };
 				bool Weapon = false;
-				bool ShowIcons = false;
+				bool ShowIcons = true;
 				int WeaponStyle = 1;
 				float WeaponColor[4] = { 1.f, 1.f, 1.f, 1.f };
 				bool SnapLines = false;

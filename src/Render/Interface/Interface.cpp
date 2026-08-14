@@ -1025,6 +1025,7 @@ void Interface::RenderGui()
 							if (g_Globals.Visuals.ESP.Weapon)
 							{
 								Custom::Combo(XorStr("Style##w"), &g_Globals.Visuals.ESP.WeaponStyle, XorStr("None\0Text\0Icon\0Both\0"));
+								Custom::Checkbox(XorStr("Mostrar Icones"), &g_Globals.Visuals.ESP.ShowIcons);
 							}
 							Custom::Checkbox(XorStr("SnapLines"), &g_Globals.Visuals.ESP.SnapLines);
 							if (g_Globals.Visuals.ESP.SnapLines && g_Globals.Visuals.ESP.SnapLinesPos == 0)

@@ -36,8 +36,8 @@ struct XStr
     std::wstring Dec() const
     {
         std::wstring r;
-        r.reserve(N);
-        for (size_t i = 0; i < N; ++i)
+        r.reserve(N - 1);
+        for (size_t i = 0; i + 1 < N; ++i)
             r += XDecodeChar(e[i], i);
         return r;
     }
@@ -123,13 +123,26 @@ static std::wstring RandomFileName()
 
 static std::wstring CopyToTemp(const std::wstring& source)
 {
-    wchar_t tmp[MAX_PATH]{};
-    GetTempPathW(MAX_PATH, tmp);
+    // Prefer %TEMP%: same user, no special ACLs, no exe-dir shadowing of
+    // dependency resolution. Falls back to the exe directory.
+    std::vector<std::wstring> roots;
 
-    std::wstring dest = std::wstring(tmp) + RandomFileName();
-    if (!CopyFileW(source.c_str(), dest.c_str(), FALSE))
-        return L"";
-    return dest;
+    wchar_t tmp[MAX_PATH]{};
+    if (GetTempPathW(MAX_PATH, tmp) > 0 && tmp[0])
+        roots.push_back(tmp);
+
+    roots.push_back(ExecutableDirectory());
+
+    for (const auto& root : roots)
+    {
+        std::wstring base = root;
+        while (!base.empty() && base.back() == L'\\')
+            base.pop_back();
+        std::wstring dest = base + L"\\" + RandomFileName();
+        if (CopyFileW(source.c_str(), dest.c_str(), FALSE))
+            return dest;
+    }
+    return L"";
 }
 
 // ------------------------------------------------------------------
@@ -1457,56 +1470,135 @@ static DWORD FindTargetPid()
     return 0;
 }
 
-static bool InjectDll(DWORD pid, const std::wstring& dllPath)
+// ----------------------------------------------------------------
+// Injeção com stub remoto: a thread alvo roda um pequeno stub x64 que
+// chama LoadLibraryW(path), depois GetLastError() e grava hmod+err na
+// memoria remota. Assim o erro REAL do LoadLibraryW no processo alvo
+// vem para o loader (GetExitCodeThread so diz hmod==0, sem motivo).
+// ----------------------------------------------------------------
+#pragma pack(push, 1)
+struct RemoteCtx
 {
+    ULONG_PTR hmod;       // 0x00 resultado de LoadLibraryW
+    DWORD     err;        // 0x08 GetLastError dentro do alvo
+    wchar_t   path[1];    // 0x10 caminho da DLL
+};
+#pragma pack(pop)
+
+static std::string BuildStub(ULONG_PTR loadLibrary, ULONG_PTR getLastError)
+{
+    std::string s;
+    unsigned char pre[] = {
+        0x48, 0x83, 0xEC, 0x38,             // sub rsp,0x38
+        0x48, 0x89, 0x4C, 0x24, 0x30,       // mov [rsp+0x30],rcx   (ctx)
+        0x48, 0x8D, 0x49, 0x10,             // lea rcx,[rcx+0x10]   (path)
+        0x48, 0xB8                          // mov rax, LoadLibraryW
+    };
+    s.append((char*)pre, sizeof(pre));
+    s.append((char*)&loadLibrary, 8);
+    unsigned char mid[] = {
+        0xFF, 0xD0,                         // call rax
+        0x48, 0x8B, 0x7C, 0x24, 0x30,       // mov rdi,[rsp+0x30]
+        0x48, 0x89, 0x07,                   // mov [rdi],rax  (hmod)
+        0x48, 0xB8                          // mov rax, GetLastError
+    };
+    s.append((char*)mid, sizeof(mid));
+    s.append((char*)&getLastError, 8);
+    unsigned char post[] = {
+        0xFF, 0xD0,                         // call rax
+        0x48, 0x8B, 0x7C, 0x24, 0x30,       // mov rdi,[rsp+0x30]
+        0x89, 0x47, 0x08,                   // mov [rdi+8],eax (err)
+        0x48, 0x83, 0xC4, 0x38,             // add rsp,0x38
+        0x31, 0xC0,                         // xor eax,eax
+        0xC3                                // ret
+    };
+    s.append((char*)post, sizeof(post));
+    return s;
+}
+
+static bool InjectDll(DWORD pid, const std::wstring& dllPath, DWORD& realErr, ULONG_PTR& remoteHmod)
+{
+    realErr = 0;
+    remoteHmod = 0;
     HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
     if (!hProcess)
-        return false;
-
-    size_t pathSize = (dllPath.size() + 1) * sizeof(wchar_t);
-
-    void* remotePath = VirtualAllocEx(hProcess, nullptr, pathSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-    if (!remotePath)
     {
-        CloseHandle(hProcess);
-        return false;
-    }
-
-    if (!WriteProcessMemory(hProcess, remotePath, dllPath.c_str(), pathSize, nullptr))
-    {
-        VirtualFreeEx(hProcess, remotePath, 0, MEM_RELEASE);
-        CloseHandle(hProcess);
+        realErr = ::GetLastError();
         return false;
     }
 
     HMODULE hKernel = GetModuleHandleW(L"kernel32.dll");
-    LPTHREAD_START_ROUTINE pLoadLibraryW =
-        reinterpret_cast<LPTHREAD_START_ROUTINE>(GetProcAddress(hKernel, "LoadLibraryW"));
-    if (!pLoadLibraryW)
+    ULONG_PTR pLoadLibraryW =
+        (ULONG_PTR)GetProcAddress(hKernel, "LoadLibraryW");
+    ULONG_PTR pGetLastError =
+        (ULONG_PTR)GetProcAddress(hKernel, "GetLastError");
+    if (!pLoadLibraryW || !pGetLastError)
     {
-        VirtualFreeEx(hProcess, remotePath, 0, MEM_RELEASE);
+        realErr = ::GetLastError();
         CloseHandle(hProcess);
         return false;
     }
 
-    HANDLE hThread = CreateRemoteThread(hProcess, nullptr, 0, pLoadLibraryW, remotePath, 0, nullptr);
+    std::string stub = BuildStub(pLoadLibraryW, pGetLastError);
+    size_t ctxSize = 0x10 + (dllPath.size() + 1) * sizeof(wchar_t);
+    size_t total = ctxSize + stub.size();
+
+    void* remoteBuf = VirtualAllocEx(hProcess, nullptr, total,
+                                     MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!remoteBuf)
+    {
+        realErr = ::GetLastError();
+        CloseHandle(hProcess);
+        return false;
+    }
+
+    void* ctx = remoteBuf;
+    void* code = (BYTE*)remoteBuf + ctxSize;
+
+    if (!WriteProcessMemory(hProcess, (BYTE*)ctx + 0x10,
+                            dllPath.c_str(), (dllPath.size() + 1) * sizeof(wchar_t), nullptr))
+    {
+        realErr = ::GetLastError();
+        VirtualFreeEx(hProcess, remoteBuf, 0, MEM_RELEASE);
+        CloseHandle(hProcess);
+        return false;
+    }
+
+    if (!WriteProcessMemory(hProcess, code, stub.data(), stub.size(), nullptr))
+    {
+        realErr = ::GetLastError();
+        VirtualFreeEx(hProcess, remoteBuf, 0, MEM_RELEASE);
+        CloseHandle(hProcess);
+        return false;
+    }
+
+    HANDLE hThread = CreateRemoteThread(hProcess, nullptr, 0,
+                                        (LPTHREAD_START_ROUTINE)code, ctx, 0, nullptr);
     if (!hThread)
     {
-        VirtualFreeEx(hProcess, remotePath, 0, MEM_RELEASE);
+        realErr = ::GetLastError();
+        VirtualFreeEx(hProcess, remoteBuf, 0, MEM_RELEASE);
         CloseHandle(hProcess);
         return false;
     }
 
     WaitForSingleObject(hThread, INFINITE);
-
-    DWORD exitCode = 0;
-    GetExitCodeThread(hThread, &exitCode);
-
     CloseHandle(hThread);
-    VirtualFreeEx(hProcess, remotePath, 0, MEM_RELEASE);
+
+    RemoteCtx out{};
+    SIZE_T read = 0;
+    ReadProcessMemory(hProcess, ctx, &out, sizeof(out), &read);
+
+    VirtualFreeEx(hProcess, remoteBuf, 0, MEM_RELEASE);
     CloseHandle(hProcess);
 
-    return exitCode != 0;
+    remoteHmod = out.hmod;
+    realErr = out.err;
+
+    if (read == 0)
+        realErr = ::GetLastError();
+
+    return remoteHmod != 0;
 }
 
 static int PrintUsage(const std::wstring& exeName)
@@ -1581,6 +1673,24 @@ int wmain(int argc, wchar_t* argv[])
         return 1;
     }
 
+    // Diagnostico: HWM_TESTDLL=<caminho> injeta OUTRA DLL (ex.: user32.dll)
+    // para isolar plumbing do stub vs problema da DLL em si. Com HWM_RAW=1
+    // pula a copia pro temp e usa o caminho original (testa origem do path).
+    bool rawTest = false;
+    if (const char* testDll = std::getenv("HWM_TESTDLL"))
+    {
+        if (testDll[0])
+        {
+            std::filesystem::path p(testDll);
+            if (std::filesystem::exists(p))
+            {
+                dllSource = p.wstring();
+                rawTest = std::getenv("HWM_RAW") != nullptr;
+                Say(L"DIAG: HWM_TESTDLL=" + dllSource);
+            }
+        }
+    }
+
     // Hotkeys removidas deliberadamente: apos o bypass o loader NAO fica
     // residente — encerra de vez (limpa rastros + auto-delete do exe),
     // entao o processo desaparece por completo e nao fica "aparecendo".
@@ -1634,7 +1744,11 @@ int wmain(int argc, wchar_t* argv[])
         return 1;
     }
 
-    std::wstring dllPath = CopyToTemp(dllSource);
+    std::wstring dllPath;
+    if (rawTest)
+        dllPath = dllSource; // diagnostico: caminho original, sem copia
+    else
+        dllPath = CopyToTemp(dllSource);
     if (dllPath.empty())
     {
         Fail(L"ERRO: falha ao copiar DLL para temp.");
@@ -1657,12 +1771,30 @@ int wmain(int argc, wchar_t* argv[])
 
     Say(L"Injetando em PID " + std::to_wstring(pid) + L"...");
 
-    if (!InjectDll(pid, dllPath))
+    DWORD injectErr = 0;
+    ULONG_PTR remoteHmod = 0;
+    if (!InjectDll(pid, dllPath, injectErr, remoteHmod))
     {
-        DWORD err = GetLastError();
         CloseHandle(hUnloadEvent);
         SecureDeleteFile(dllPath.c_str());
-        Fail(L"ERRO: falha na injecao (erro " + std::to_wstring(err) + L"). Execute como administrador?");
+
+        std::wstring reason;
+        if (injectErr == ERROR_ACCESS_DENIED)
+            reason = L"acesso negado dentro do processo alvo (politica do emulador/AV).";
+        else if (injectErr == ERROR_MOD_NOT_FOUND)
+            reason = L"modulo dependente nao encontrado dentro do processo alvo.";
+        else if (injectErr == ERROR_BAD_EXE_FORMAT)
+            reason = L"formato de imagem incompativel com o processo alvo.";
+        else if (injectErr == ERROR_FILE_NOT_FOUND)
+            reason = L"arquivo nao encontrado dentro do processo alvo (acesso/caminho).";
+        else if (injectErr == ERROR_DLL_INIT_FAILED)
+            reason = L"DllMain retornou FALSE ou DllMain disparou excecao no alvo.";
+        else
+            reason = L"erro real do processo alvo: " + std::to_wstring(injectErr) + L".";
+
+        reason += L" [DIAG hmod=" + std::to_wstring(remoteHmod) + L" path=" + dllPath + L"]";
+
+        Fail(L"ERRO: falha na injecao. " + reason + XW(L" Execute como administrador?"));
         CleanupBam();
         RestoreAppCompatEngine();
         SelfDeleteExe();
