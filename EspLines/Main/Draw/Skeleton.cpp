@@ -1,11 +1,24 @@
 #include "Skeleton.hpp"
 #include <Main/Offsets/Offsets.hpp>
+#include <cmath>
 
 namespace
 {
 	static constexpr int BONE_COUNT = 49;
 	static constexpr int MAX_CACHE = 64;
-	static constexpr int MAX_HIERARCHY = 256;
+	// Janela da hierarquia lida em bulk. 256 entradas nao cobria avatares com
+	// indice de bone alto na TransformHierarchy (a cadeia de pais escapa da
+	// janela e o skeleton resolvia TRS de OUTROS objetos da cena — esqueleto
+	// deslocado/no chao). 1024 cobre o bloco de bones de qualquer avatar.
+	static constexpr int MAX_HIERARCHY = 1024;
+
+	// Bone a mais de 6m do personagem e' lixo (ponteiro reutilizado pelo jogo,
+	// hierarquia truncada ou leitura rasgada) — nunca e' desenhado.
+	static constexpr float kMaxBoneDistance = 6.0f;
+	// Minimo de bones validos para considerar o skeleton bom; abaixo disso o
+	// cache de tAccess e' reconstruido (avatar staleless) e, se persistir,
+	// o caminho UMA devolve false (cai no fallback de bones da entidade).
+	static constexpr int kMinValidBones = 10;
 
 	static constexpr int kBoneHashes[BONE_COUNT] = {
 		858159017, -2111735698, -1919801108, -1809306289, -1541408846,
@@ -196,7 +209,7 @@ namespace
 	}
 }
 
-bool Skeleton::DrawPlayer(ImDrawList* drawList, uintptr_t entity, uintptr_t umaData, bool isKnocked, const Matrix4x4& viewMatrix, bool N32, bool V31)
+bool Skeleton::DrawPlayer(ImDrawList* drawList, uintptr_t entity, uintptr_t umaData, bool isKnocked, const Matrix4x4& viewMatrix, const Vector3& entityPos, bool N32, bool V31)
 {
 	if (!g_Globals.Visuals.ESP.Skeleton)
 	{
@@ -206,104 +219,150 @@ bool Skeleton::DrawPlayer(ImDrawList* drawList, uintptr_t entity, uintptr_t umaD
 	// Caminho principal: UMA (hash de bones). Se a entidade nao tem UMA
 	// utilizavel (bots da ilha de treinamento), cai no fallback de bones
 	// diretos da entidade.
-	if (DrawPlayerUma( drawList, entity, umaData, isKnocked, viewMatrix, N32, V31 ))
+	if (DrawPlayerUma( drawList, entity, umaData, isKnocked, viewMatrix, entityPos, N32, V31 ))
 		return true;
 
-	return DrawPlayerEntityBones( drawList, entity, isKnocked, viewMatrix, N32 );
+	return DrawPlayerEntityBones( drawList, entity, isKnocked, viewMatrix, entityPos, N32 );
 }
 
-bool Skeleton::DrawPlayerUma(ImDrawList* drawList, uintptr_t entity, uintptr_t umaData, bool isKnocked, const Matrix4x4& viewMatrix, bool N32, bool V31)
+bool Skeleton::DrawPlayerUma(ImDrawList* drawList, uintptr_t entity, uintptr_t umaData, bool isKnocked, const Matrix4x4& viewMatrix, const Vector3& entityPos, bool N32, bool V31)
 {
 	auto ReadPtr = [N32](uintptr_t addr) -> uintptr_t
 		{
 			return N32 ? g_FreeFireMemory.Read<uint32_t>(addr) : g_FreeFireMemory.Read<uint64_t>(addr);
 		};
 
-	// ===== 1. Pegar ou construir cache dos tAccess =====
-	BoneCache* bc = FindCache(entity, umaData);
-
-	if (!bc)
-	{
-		uintptr_t skel = ReadPtr(umaData + Offsets::UMAData::skeleton);
-		if (!skel) return false;
-
-		uintptr_t dictAddr = ReadPtr(skel + Offsets::UMASkeleton::boneHashDataLookup);
-		if (!dictAddr) return false;
-
-		bc = AllocCache();
-		memset(bc, 0, sizeof(BoneCache));
-		bc->entity = entity;
-		bc->UMAData = umaData;
-
-		auto IterateDict = [&](auto* dict)
-			{
-				int count = dict->GetNumValues();
-				if (count <= 0) return;
-
-				for (int i = 0; i < count; ++i)
-				{
-					uintptr_t boneData = dict->GetValue(i);
-					if (!boneData) continue;
-
-					int hash = g_FreeFireMemory.Read<int>(boneData + Offsets::UMASkeleton::boneNameHash);
-					int id = HashToId(hash);
-					if (id < 0) continue;
-
-					uintptr_t transform = ReadPtr(boneData + Offsets::UMASkeleton::boneTransform);
-					if (!transform) continue;
-
-					uintptr_t tAccess = ReadPtr(transform + Offsets::GetPosWorld::transObj);
-					if (!tAccess) continue;
-
-					bc->tAccess[id] = tAccess;
-				}
-			};
-
-		if (N32 && V31)
-			IterateDict(reinterpret_cast<Offsets::UnityDictionary<true, true>*>(dictAddr));
-		else if (N32 && !V31)
-			IterateDict(reinterpret_cast<Offsets::UnityDictionary<true, false>*>(dictAddr));
-		else if (!N32 && V31)
-			IterateDict(reinterpret_cast<Offsets::UnityDictionary<false, true>*>(dictAddr));
-		else
-			IterateDict(reinterpret_cast<Offsets::UnityDictionary<false, false>*>(dictAddr));
-
-		if (!bc->tAccess[1] || !bc->tAccess[27] || !bc->tAccess[4])
+	// Posicao de bone so vale se for finita e ficar dentro do raio do
+	// personagem. Descartar lixo aqui e' o que impede o skeleton de resolver
+	// TRS de outros objetos da cena (cadeia de pais fora da janela de leitura)
+	// ou de um avatar reutilizado (ponteiro stale) — sintoma de esqueleto
+	// deslocado, no chao ou ao lado do personagem.
+	auto IsUsableBone = [&](const Vector3& p) -> bool
 		{
-			return false;
-		}
-	}
+			if (!std::isfinite(p.X) || !std::isfinite(p.Y) || !std::isfinite(p.Z)) return false;
+			if (entityPos != Vector3::Zero() && Vector3::Distance(p, entityPos) > kMaxBoneDistance) return false;
+			return true;
+		};
 
-	// ===== 2. Ler hierarquia a partir de qualquer tAccess valido =====
-	uintptr_t anyAccess = bc->tAccess[1];
-	uintptr_t hierBase = ReadPtr(anyAccess + Offsets::GetPosWorld::matrix);
-	if (!hierBase) return false;
+	// ===== 1. Construir cache dos tAccess (hash -> bone) =====
+	auto BuildCache = [&]() -> BoneCache*
+		{
+			uintptr_t skel = ReadPtr(umaData + Offsets::UMAData::skeleton);
+			if (!skel) return nullptr;
 
-	uintptr_t pValuesAddr = ReadPtr(hierBase + Offsets::GetPosWorld::matrix_list);
-	uintptr_t pParentsAddr = ReadPtr(hierBase + Offsets::GetPosWorld::matrix_indices);
-	if (!pValuesAddr || !pParentsAddr) return false;
+			uintptr_t dictAddr = ReadPtr(skel + Offsets::UMASkeleton::boneHashDataLookup);
+			if (!dictAddr) return nullptr;
 
-	// ===== 3. Bulk read: 2 leituras pra todos os dados =====
+			BoneCache* nb = AllocCache();
+			memset(nb, 0, sizeof(BoneCache));
+			nb->entity = entity;
+			nb->UMAData = umaData;
+
+			auto IterateDict = [&](auto* dict)
+				{
+					int count = dict->GetNumValues();
+					if (count <= 0) return;
+
+					for (int i = 0; i < count; ++i)
+					{
+						uintptr_t boneData = dict->GetValue(i);
+						if (!boneData) continue;
+
+						int hash = g_FreeFireMemory.Read<int>(boneData + Offsets::UMASkeleton::boneNameHash);
+						int id = HashToId(hash);
+						if (id < 0) continue;
+
+						uintptr_t transform = ReadPtr(boneData + Offsets::UMASkeleton::boneTransform);
+						if (!transform) continue;
+
+						uintptr_t tAccess = ReadPtr(transform + Offsets::GetPosWorld::transObj);
+						if (!tAccess) continue;
+
+						nb->tAccess[id] = tAccess;
+					}
+				};
+
+			if (N32 && V31)
+				IterateDict(reinterpret_cast<Offsets::UnityDictionary<true, true>*>(dictAddr));
+			else if (N32 && !V31)
+				IterateDict(reinterpret_cast<Offsets::UnityDictionary<true, false>*>(dictAddr));
+			else if (!N32 && V31)
+				IterateDict(reinterpret_cast<Offsets::UnityDictionary<false, true>*>(dictAddr));
+			else
+				IterateDict(reinterpret_cast<Offsets::UnityDictionary<false, false>*>(dictAddr));
+
+			if (!nb->tAccess[1] || !nb->tAccess[27] || !nb->tAccess[4])
+			{
+				--g_CacheCount;
+				return nullptr;
+			}
+
+			return nb;
+		};
+
+	auto RemoveCache = [&]()
+		{
+			for (int i = 0; i < g_CacheCount; ++i)
+			{
+				if (g_Cache[i].entity == entity && g_Cache[i].UMAData == umaData)
+				{
+					g_Cache[i] = g_Cache[--g_CacheCount];
+					return;
+				}
+			}
+		};
+
+	BoneCache* bc = FindCache(entity, umaData);
+	if (!bc) bc = BuildCache();
+	if (!bc) return false;
+
+	// ===== 2/3/4. Hierarquia + posicoes, com rebuild se o cache estiver stale =====
 	static TMatrix matrices[MAX_HIERARCHY];
 	static int parents[MAX_HIERARCHY];
-
-	if (!g_FreeFireMemory.Read(pValuesAddr, matrices, sizeof(TMatrix) * MAX_HIERARCHY)) return false;
-	if (!g_FreeFireMemory.Read(pParentsAddr, parents, sizeof(int) * MAX_HIERARCHY)) return false;
-
-	// ===== 4. Re-ler indices e calcular posicoes (tudo local, 0 reads) =====
 	Vector3 pos[BONE_COUNT];
+	int validCount = 0;
 
-	for (int i = 0; i < BONE_COUNT; ++i)
+	for (int attempt = 0; attempt < 2; ++attempt)
 	{
-		if (!bc->tAccess[i])
+		if (attempt > 0)
 		{
-			pos[i] = Vector3::Zero();
-			continue;
+			// Todos os bones do cache sairam invalidos: tAccess stale
+			// (avatar/ponteiro reutilizado pelo jogo) — descarta e re-resolve.
+			RemoveCache();
+			bc = BuildCache();
+			if (!bc) return false;
 		}
 
-		int idx = g_FreeFireMemory.Read<int>(bc->tAccess[i] + Offsets::GetPosWorld::index);
-		pos[i] = CalcPosition(idx, matrices, parents);
+		uintptr_t anyAccess = bc->tAccess[1];
+		uintptr_t hierBase = ReadPtr(anyAccess + Offsets::GetPosWorld::matrix);
+		if (!hierBase) continue;
+
+		uintptr_t pValuesAddr = ReadPtr(hierBase + Offsets::GetPosWorld::matrix_list);
+		uintptr_t pParentsAddr = ReadPtr(hierBase + Offsets::GetPosWorld::matrix_indices);
+		if (!pValuesAddr || !pParentsAddr) continue;
+
+		if (!g_FreeFireMemory.Read(pValuesAddr, matrices, sizeof(TMatrix) * MAX_HIERARCHY)) continue;
+		if (!g_FreeFireMemory.Read(pParentsAddr, parents, sizeof(int) * MAX_HIERARCHY)) continue;
+
+		validCount = 0;
+		for (int i = 0; i < BONE_COUNT; ++i)
+		{
+			pos[i] = Vector3::Zero();
+			if (!bc->tAccess[i]) continue;
+
+			int idx = g_FreeFireMemory.Read<int>(bc->tAccess[i] + Offsets::GetPosWorld::index);
+			Vector3 p = CalcPosition(idx, matrices, parents);
+			if (IsUsableBone(p))
+			{
+				pos[i] = p;
+				++validCount;
+			}
+		}
+
+		if (validCount >= kMinValidBones) break;
 	}
+
+	if (validCount < kMinValidBones) return false;
 
 	// ===== 5. Desenhar =====
 	ImU32 col = isKnocked ? ImColor(255, 0, 0, 255) : ImColor(g_Globals.Visuals.ESP.SkeletonColor[0], g_Globals.Visuals.ESP.SkeletonColor[1], g_Globals.Visuals.ESP.SkeletonColor[2], g_Globals.Visuals.ESP.SkeletonColor[3]);
@@ -346,7 +405,7 @@ bool Skeleton::DrawPlayerUma(ImDrawList* drawList, uintptr_t entity, uintptr_t u
 
 // ===== Fallback: bones diretos da entidade (bots da ilha de treinamento) =====
 
-bool Skeleton::DrawPlayerEntityBones(ImDrawList* drawList, uintptr_t entity, bool isKnocked, const Matrix4x4& viewMatrix, bool N32)
+bool Skeleton::DrawPlayerEntityBones(ImDrawList* drawList, uintptr_t entity, bool isKnocked, const Matrix4x4& viewMatrix, const Vector3& entityPos, bool N32)
 {
 	auto ReadPtr = [N32](uintptr_t addr) -> uintptr_t
 		{
@@ -411,8 +470,20 @@ bool Skeleton::DrawPlayerEntityBones(ImDrawList* drawList, uintptr_t entity, boo
 		uintptr_t ml = 0, mi = 0;
 		if ( ResolveBoneAccess( fc->boneNode[ i ], N32, idx, ml, mi ) )
 		{
-			pos[ i ] = CalcPosition( idx, matrices, parents );
-			++validCount;
+			Vector3 p = CalcPosition( idx, matrices, parents );
+			// Mesma validacao do caminho UMA: bone longe do personagem ou
+			// com valores nao-finitos e' lixo (cache stale / leitura rasgada)
+			// e nao pode ser desenhado.
+			if ( std::isfinite( p.X ) && std::isfinite( p.Y ) && std::isfinite( p.Z )
+				&& ( entityPos == Vector3::Zero( ) || Vector3::Distance( p, entityPos ) <= kMaxBoneDistance ) )
+			{
+				pos[ i ] = p;
+				++validCount;
+			}
+			else
+			{
+				pos[ i ] = Vector3::Zero( );
+			}
 		}
 		else
 		{

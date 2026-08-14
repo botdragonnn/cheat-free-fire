@@ -194,7 +194,7 @@ static void DrawEspEntityOverlay( const PlayerData& p, ImDrawList* DL, const str
 
 	// --- Skeleton ---
 	if ( drawSkeleton )
-		Skeleton::DrawPlayer( DL, p.Entity, p.UMAData, p.IsKnocked, ViewMatrix, N32, V31 );
+		Skeleton::DrawPlayer( DL, p.Entity, p.UMAData, p.IsKnocked, ViewMatrix, p.FeetWorld, N32, V31 );
 }
 
 // ==================== Read Thread ====================
